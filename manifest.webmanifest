@@ -1,6 +1,6 @@
 {
-  "name": "Обход",
-  "short_name": "Обход",
+  "name": "merch",
+  "short_name": "merch",
   "description": "Маршрут и отметки рабочего дня мерчендайзера",
   "start_url": "./",
   "scope": "./",

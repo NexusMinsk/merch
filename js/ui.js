@@ -587,5 +587,5 @@ function tabs(state) {
 function rail(state) {
   const items = [["today", "Сегодня"], ["tomorrow", "Завтра"], ["stores", "Точки"], ["history", "Журнал"], ["settings", "Настройки"]];
   const current = navCurrent(state);
-  return `<p class="logo">ОБХОД</p>${items.map(([view, label]) => `<button type="button" data-action="go" data-view="${view}" ${current === view ? 'aria-current="page"' : ""}>${label}</button>`).join("")}`;
+  return `<p class="logo">merch</p>${items.map(([view, label]) => `<button type="button" data-action="go" data-view="${view}" ${current === view ? 'aria-current="page"' : ""}>${label}</button>`).join("")}`;
 }

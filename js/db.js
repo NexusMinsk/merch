@@ -1,4 +1,4 @@
-const KEY = "obhod.v2";
+const KEY = "merch.v1";
 
 export function emptyDb() {
   return {
@@ -17,13 +17,18 @@ export function emptyDb() {
 }
 
 function memory() {
-  if (!globalThis.__obhodMemory) globalThis.__obhodMemory = emptyDb();
-  return globalThis.__obhodMemory;
+  if (!globalThis.__merchMemory) globalThis.__merchMemory = emptyDb();
+  return globalThis.__merchMemory;
 }
 
 export function loadDb() {
   try {
+    if (!localStorage.getItem(KEY)) {
+      const legacy = localStorage.getItem("obhod.v2") || localStorage.getItem("obhod.v1");
+      if (legacy) localStorage.setItem(KEY, legacy);
+    }
     localStorage.removeItem("obhod.v1");
+    localStorage.removeItem("obhod.v2");
   } catch {
     // старые проверочные данные больше не читаем
   }
@@ -42,7 +47,7 @@ export function saveDb(db) {
   try {
     localStorage.setItem(KEY, JSON.stringify(next));
   } catch {
-    globalThis.__obhodMemory = next;
+    globalThis.__merchMemory = next;
   }
   return next;
 }

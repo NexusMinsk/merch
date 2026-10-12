@@ -331,7 +331,7 @@ function exportCopy() {
   const blob = new Blob([exportPayload(db)], { type: "application/json" });
   const link = document.createElement("a");
   link.href = URL.createObjectURL(blob);
-  link.download = `obhod-${todayISO()}.json`;
+  link.download = `merch-${todayISO()}.json`;
   link.click();
   URL.revokeObjectURL(link.href);
   toast("Копия скачана");
@@ -341,7 +341,7 @@ async function importCopy(file) {
   try {
     const parsed = JSON.parse(await file.text());
     if (!parsed || typeof parsed !== "object" || !parsed.settings || !parsed.days) {
-      toast("В файле нет данных Обхода");
+      toast("В файле нет данных merch");
       return;
     }
     db = normalize(parsed);
