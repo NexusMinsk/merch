@@ -1,0 +1,694 @@
+import { assessStore, planDay, primaryReason, storeById, todayISO } from "./model.js";
+import { emptyDb, exportPayload, loadDb, normalize, overrideFor, saveDb } from "./db.js";
+import { render } from "./ui.js";
+
+let db = loadDb();
+const state = {
+  view: "today",
+  storeId: null,
+  date: null,
+  chain: "all",
+  query: "",
+  draft: null,
+  formError: "",
+  pickerDate: null,
+  deliveryOpen: false,
+  confirm: null,
+  confirmId: null,
+  confirmDate: null,
+};
+
+let lastView = "";
+
+function draw() {
+  render(state, db);
+  if (state.view !== lastView) {
+    window.scrollTo(0, 0);
+    lastView = state.view;
+  }
+}
+
+function toast(message) {
+  const el = document.getElementById("toast");
+  el.textContent = message;
+  el.classList.add("show");
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => el.classList.remove("show"), 1800);
+}
+
+function persist() {
+  db = saveDb(db);
+}
+
+function parseQty(raw, allowNull) {
+  const text = String(raw ?? "").trim();
+  if (!text) return allowNull ? null : 0;
+  const value = Number(text.replace(",", "."));
+  if (!Number.isFinite(value) || value < 0) return allowNull ? null : 0;
+  return Math.min(9999, Math.round(value));
+}
+
+function readDraftFromDom() {
+  if (state.view !== "visit" || !state.draft) return;
+  const warehouse = document.getElementById("warehouse");
+  const defect = document.getElementById("defect");
+  const note = document.getElementById("note");
+  const put = document.querySelector('[data-field="putOnShelf"]');
+  if (warehouse) state.draft.warehouseQty = parseQty(warehouse.value, true);
+  if (defect) state.draft.defectQty = parseQty(defect.value, false);
+  if (note) state.draft.note = note.value;
+  if (put) state.draft.putOnShelf = put.checked;
+}
+
+function makeDraft(stop) {
+  if (stop.visit) {
+    return {
+      shelf: stop.visit.shelf || null,
+      warehouseQty: stop.visit.warehouseQty ?? null,
+      defectQty: stop.visit.defectQty || 0,
+      defectDate: stop.visit.defectDate || "",
+      orderStatus: stop.visit.orderStatus || null,
+      putOnShelf: Boolean(stop.visit.putOnShelf),
+      note: stop.visit.note || "",
+    };
+  }
+  if (stop.draft) return { ...stop.draft };
+  const signal = db.signals[stop.storeId] || {};
+  return {
+    shelf: null,
+    warehouseQty: null,
+    defectQty: 0,
+    defectDate: signal.defectDate || "",
+    orderStatus: null,
+    putOnShelf: false,
+    note: "",
+  };
+}
+
+function openVisit(date, storeId, markArrival) {
+  const day = db.days[date];
+  const stop = day?.stops?.find((item) => item.storeId === storeId);
+  if (!day || !stop) {
+    state.view = "store";
+    state.storeId = storeId;
+    state.pickerDate = null;
+    state.deliveryOpen = false;
+    state.confirm = null;
+    return;
+  }
+  if (markArrival && stop.status === "pending") {
+    stop.arrivedAt = stop.arrivedAt || new Date().toISOString();
+    persist();
+  }
+  state.view = "visit";
+  state.date = date;
+  state.storeId = storeId;
+  state.formError = "";
+  state.draft = makeDraft(stop);
+  state.pickerDate = null;
+  state.deliveryOpen = false;
+  state.confirm = null;
+}
+
+function clone(value) {
+  return JSON.parse(JSON.stringify(value ?? {}));
+}
+
+function signalFromVisit(date, visit) {
+  return {
+    shelf: visit.shelf,
+    warehouseQty: visit.warehouseQty,
+    defectQty: visit.defectQty,
+    defectDate: visit.defectDate || null,
+    orderStatus: visit.orderStatus,
+    putOnShelf: Boolean(visit.putOnShelf),
+    note: visit.note || "",
+    updatedAt: new Date().toISOString(),
+    lastVisitDate: date,
+  };
+}
+
+function writeSignal(storeId, date, visit) {
+  const prev = db.signals[storeId];
+  if (prev?.lastVisitDate && prev.lastVisitDate > date) return;
+  db.signals[storeId] = signalFromVisit(date, visit);
+}
+
+function saveVisit() {
+  readDraftFromDom();
+  const draft = state.draft;
+  const day = db.days[state.date];
+  const stop = day?.stops?.find((item) => item.storeId === state.storeId);
+  if (!draft || !stop) return;
+  if (!draft.shelf) {
+    state.formError = "Отметьте, что на полке: норма, мало или раскупили.";
+    return;
+  }
+  const stockout = draft.shelf === "empty" && draft.warehouseQty === 0;
+  if (stockout && !draft.orderStatus) {
+    state.formError = "Товара нет ни на полке, ни на складе. Отметьте, сделали ли заказ у товароведа.";
+    return;
+  }
+  const visit = {
+    shelf: draft.shelf,
+    warehouseQty: draft.warehouseQty,
+    defectQty: draft.defectQty || 0,
+    defectDate: draft.defectDate || null,
+    orderStatus: draft.orderStatus,
+    putOnShelf: Boolean(draft.putOnShelf),
+    note: (draft.note || "").trim(),
+  };
+  stop.visit = visit;
+  stop.status = "done";
+  stop.finishedAt = new Date().toISOString();
+  stop.arrivedAt = stop.arrivedAt || stop.finishedAt;
+  delete stop.draft;
+  writeSignal(state.storeId, state.date, visit);
+  persist();
+  state.view = "today";
+  state.draft = null;
+  state.formError = "";
+  toast("Точка сохранена");
+}
+
+function moveStop(date, id, dir) {
+  const day = db.days[date];
+  if (day) {
+    const index = day.stops.findIndex((stop) => stop.storeId === id);
+    const next = index + dir;
+    if (index < 0 || next < 0 || next >= day.stops.length) return;
+    if (day.stops[index].status !== "pending" || day.stops[next].status !== "pending") return;
+    const [item] = day.stops.splice(index, 1);
+    day.stops.splice(next, 0, item);
+    persist();
+    return;
+  }
+  const ids = planDay(date, db).stops.map((stop) => stop.storeId);
+  const index = ids.indexOf(id);
+  const next = index + dir;
+  if (index < 0 || next < 0 || next >= ids.length) return;
+  const current = ids[index];
+  ids[index] = ids[next];
+  ids[next] = current;
+  overrideFor(db, date).order = ids;
+  persist();
+}
+
+function dropStop(date, id, force) {
+  if (db.days[date]) return;
+  const stop = planDay(date, db).stops.find((item) => item.storeId === id);
+  if (!force && stop && (stop.reasons.includes("defect") || stop.reasons.includes("delivery"))) {
+    state.confirm = {
+      title: "Убрать обязательную точку?",
+      text: stop.reasons.includes("defect")
+        ? "На этот день отмечен большой брак. Без неё маршрут поедет мимо."
+        : "После поставки сюда нужно приехать и выставить товар.",
+      confirm: "Всё равно убрать",
+      action: "confirm-drop",
+    };
+    state.confirmDate = date;
+    state.confirmId = id;
+    return;
+  }
+  const override = overrideFor(db, date);
+  if (!override.drop.includes(id)) override.drop.push(id);
+  override.pin = override.pin.filter((item) => item !== id);
+  override.order = override.order.filter((item) => item !== id);
+  state.confirm = null;
+  persist();
+}
+
+function pinStop(date, id) {
+  const day = db.days[date];
+  if (day) {
+    const existing = day.stops.find((stop) => stop.storeId === id);
+    if (existing) {
+      existing.status = "pending";
+      existing.finishedAt = null;
+    } else {
+      const store = storeById(id);
+      const assessed = assessStore(store, db.signals[id], date, db.settings);
+      if (!assessed.reasons.includes("defect") && !assessed.reasons.includes("delivery")) {
+        assessed.reasons = assessed.reasons.filter((reason) => reason !== "control");
+        if (!assessed.reasons.includes("pin")) assessed.reasons.push("pin");
+        assessed.primary = primaryReason(assessed.reasons);
+      }
+      day.stops.push({
+        storeId: id,
+        reasons: assessed.reasons,
+        primary: assessed.primary,
+        score: assessed.score,
+        daysSince: assessed.daysSince,
+        status: "pending",
+        arrivedAt: null,
+        finishedAt: null,
+        visit: null,
+      });
+    }
+  } else {
+    const override = overrideFor(db, date);
+    override.drop = override.drop.filter((item) => item !== id);
+    if (!override.pin.includes(id)) override.pin.push(id);
+  }
+  state.pickerDate = null;
+  persist();
+  toast("Точка в маршруте");
+}
+
+function startDay() {
+  const today = todayISO();
+  if (db.days[today]) return;
+  const plan = planDay(today, db);
+  if (plan.stops.length === 0) return;
+  db.days[today] = {
+    status: "active",
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
+    mode: plan.mode,
+    snapshot: {
+      signals: clone(db.signals),
+      overrides: clone(db.overrides),
+    },
+    stops: plan.stops.map((stop) => ({ ...stop, reasons: stop.reasons.slice() })),
+  };
+  persist();
+  toast("День начат");
+}
+
+function latestVisitBefore(storeId, date) {
+  let found = null;
+  for (const [dayDate, day] of Object.entries(db.days)) {
+    if (dayDate >= date) continue;
+    for (const stop of day.stops || []) {
+      if (stop.storeId === storeId && stop.visit && (!found || dayDate > found.date)) {
+        found = { date: dayDate, visit: stop.visit };
+      }
+    }
+  }
+  return found;
+}
+
+function cancelDay() {
+  const today = todayISO();
+  const day = db.days[today];
+  if (!day) return;
+  if (day.snapshot?.signals) {
+    db.signals = clone(day.snapshot.signals);
+    db.overrides = clone(day.snapshot.overrides || {});
+  } else {
+    const touched = (day.stops || []).filter((stop) => stop.visit).map((stop) => stop.storeId);
+    for (const storeId of touched) {
+      const older = latestVisitBefore(storeId, today);
+      if (older) db.signals[storeId] = signalFromVisit(older.date, older.visit);
+      else if (db.signals[storeId]?.lastVisitDate === today) delete db.signals[storeId];
+    }
+  }
+  delete db.days[today];
+  state.view = "today";
+  state.draft = null;
+  state.formError = "";
+  state.confirm = null;
+  state.pickerDate = null;
+  persist();
+  toast("День выключен");
+}
+
+function finishDay() {
+  const today = todayISO();
+  const day = db.days[today];
+  if (!day) return;
+  for (const stop of day.stops) {
+    if (stop.status === "pending") stop.status = "skipped";
+  }
+  day.status = "done";
+  day.finishedAt = new Date().toISOString();
+  state.confirm = null;
+  persist();
+  toast("День закрыт");
+}
+
+function exportCopy() {
+  const blob = new Blob([exportPayload(db)], { type: "application/json" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `obhod-${todayISO()}.json`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+  toast("Копия скачана");
+}
+
+async function importCopy(file) {
+  try {
+    const parsed = JSON.parse(await file.text());
+    if (!parsed || typeof parsed !== "object" || !parsed.settings || !parsed.days) {
+      toast("В файле нет данных Обхода");
+      return;
+    }
+    db = normalize(parsed);
+    persist();
+    state.view = "today";
+    toast("Данные восстановлены");
+  } catch {
+    toast("Файл не прочитался");
+  }
+}
+
+function stashDraft() {
+  if (state.view !== "visit" || !state.draft || !state.date) return;
+  const stop = db.days[state.date]?.stops?.find((item) => item.storeId === state.storeId);
+  if (!stop || stop.status === "done") return;
+  stop.draft = { ...state.draft };
+  persist();
+}
+
+function toggleDelivery(id) {
+  if (!id) return;
+  const today = todayISO();
+  if (!db.deliveries || typeof db.deliveries !== "object") db.deliveries = {};
+  const list = Array.isArray(db.deliveries[today]) ? db.deliveries[today].slice() : [];
+  const on = list.includes(id);
+  db.deliveries[today] = on ? list.filter((item) => item !== id) : list.concat(id);
+  persist();
+  toast(on ? "Убрано из поставки" : "В списке поставки");
+}
+
+function rebuildSignals() {
+  db.signals = {};
+  const dates = Object.keys(db.days || {}).sort();
+  for (const date of dates) {
+    for (const stop of db.days[date].stops || []) {
+      if (!stop.visit || stop.status === "skipped") continue;
+      writeSignal(stop.storeId, date, stop.visit);
+    }
+  }
+}
+
+function resetDay(date) {
+  if (!date) return;
+  const day = db.days[date];
+  const wiped = new Set((day?.stops || []).filter((stop) => stop.visit).map((stop) => stop.storeId));
+  const keepDefect = {};
+  for (const [storeId, signal] of Object.entries(day?.snapshot?.signals || {})) {
+    if (signal?.defectDate) keepDefect[storeId] = signal.defectDate;
+  }
+  for (const [storeId, signal] of Object.entries(db.signals || {})) {
+    if (signal?.defectDate && !wiped.has(storeId)) keepDefect[storeId] = signal.defectDate;
+  }
+  delete db.days[date];
+  if (db.deliveries) delete db.deliveries[date];
+  if (db.overrides) delete db.overrides[date];
+  rebuildSignals();
+  for (const [storeId, defectDate] of Object.entries(keepDefect)) {
+    if (!db.signals[storeId]) db.signals[storeId] = { defectDate, updatedAt: new Date().toISOString() };
+    else if (!db.signals[storeId].defectDate) db.signals[storeId].defectDate = defectDate;
+  }
+  if ((state.view === "day" || state.view === "visit") && state.date === date) {
+    state.view = "settings";
+    state.date = null;
+    state.draft = null;
+  }
+  state.confirm = null;
+  state.confirmDate = null;
+  state.pickerDate = null;
+  persist();
+  toast("День сброшен");
+}
+
+function resetAllDays() {
+  db.days = {};
+  db.deliveries = {};
+  db.overrides = {};
+  db.signals = {};
+  state.view = "today";
+  state.date = null;
+  state.draft = null;
+  state.formError = "";
+  state.confirm = null;
+  state.confirmDate = null;
+  state.pickerDate = null;
+  persist();
+  toast("Дни сброшены");
+}
+
+function rememberDraft() {
+  readDraftFromDom();
+  stashDraft();
+}
+
+document.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-action]");
+  if (!button) return;
+  rememberDraft();
+  const action = button.dataset.action;
+  const date = button.dataset.date;
+  const id = button.dataset.id;
+
+  if (action === "go") {
+    state.view = button.dataset.view;
+    state.formError = "";
+    state.pickerDate = null;
+    state.deliveryOpen = false;
+    state.confirm = null;
+    state.draft = null;
+  } else if (action === "dismiss-hint") {
+    db.settings.hintSeen = true;
+    persist();
+  } else if (action === "start-day") {
+    startDay();
+  } else if (action === "arrive") {
+    openVisit(date || todayISO(), id, true);
+  } else if (action === "open-stop") {
+    openVisit(date, id, false);
+  } else if (action === "open-store") {
+    state.view = "store";
+    state.storeId = id;
+  } else if (action === "open-day") {
+    state.view = "day";
+    state.date = date;
+  } else if (action === "move") {
+    moveStop(date, id, Number(button.dataset.dir));
+  } else if (action === "drop") {
+    dropStop(date, id, false);
+  } else if (action === "confirm-drop") {
+    dropStop(state.confirmDate, state.confirmId, true);
+  } else if (action === "open-picker") {
+    state.pickerDate = date;
+    state.deliveryOpen = false;
+    state.confirm = null;
+  } else if (action === "open-deliveries") {
+    state.view = "deliveries";
+    state.deliveryOpen = false;
+    state.pickerDate = null;
+    state.confirm = null;
+    state.draft = null;
+    state.formError = "";
+  } else if (action === "close-deliveries") {
+    state.view = "today";
+    state.deliveryOpen = false;
+  } else if (action === "toggle-delivery") {
+    toggleDelivery(id);
+  } else if (action === "close-picker" || action === "close-confirm" || action === "close-overlay") {
+    state.pickerDate = null;
+    state.confirm = null;
+  } else if (action === "pin") {
+    pinStop(date, id);
+  } else if (action === "shelf") {
+    state.draft.shelf = button.dataset.value;
+    state.formError = "";
+  } else if (action === "order") {
+    state.draft.orderStatus = button.dataset.value;
+    state.formError = "";
+  } else if (action === "step") {
+    const field = button.dataset.field;
+    const dir = Number(button.dataset.dir);
+    if (field === "warehouseQty") {
+      if (state.draft.warehouseQty == null) state.draft.warehouseQty = dir > 0 ? 0 : null;
+      else state.draft.warehouseQty = Math.max(0, state.draft.warehouseQty + dir);
+    } else {
+      state.draft.defectQty = Math.max(0, (state.draft.defectQty || 0) + dir);
+    }
+  } else if (action === "warehouse-clear") {
+    state.draft.warehouseQty = null;
+  } else if (action === "clear-date") {
+    state.draft[button.dataset.field] = "";
+  } else if (action === "save-visit") {
+    saveVisit();
+  } else if (action === "skip-stop") {
+    const day = db.days[state.date];
+    const stop = day?.stops?.find((item) => item.storeId === state.storeId);
+    if (stop && stop.status !== "done") {
+      stop.status = "skipped";
+      stop.finishedAt = new Date().toISOString();
+      delete stop.draft;
+      persist();
+    }
+    state.view = "today";
+    state.draft = null;
+  } else if (action === "cancel-arrival") {
+    const day = db.days[state.date];
+    const stop = day?.stops?.find((item) => item.storeId === state.storeId);
+    if (stop && stop.status === "pending") stop.arrivedAt = null;
+    persist();
+    state.view = "today";
+    state.draft = null;
+  } else if (action === "ask-cancel-day") {
+    const day = db.days[todayISO()];
+    if (!day) return;
+    state.confirm = {
+      title: "Выключить день?",
+      text: day.snapshot
+        ? "Вернётесь к моменту до «Начать работу». Отметки на точках за этот день исчезнут, дата брака станет такой, как была до старта. Утренний список поставки останется."
+        : "День снимется, сегодняшние отметки на точках уберу. Этот запуск был без снимка, поэтому даты, переписанные уже внутри визита, могут не вернуться.",
+      confirm: "Выключить без последствий",
+      action: "cancel-day",
+    };
+  } else if (action === "cancel-day") {
+    cancelDay();
+  } else if (action === "ask-finish") {
+    state.confirm = {
+      title: "Завершить день?",
+      text: "Оставшиеся точки станут пропуском. Полка и склад по ним не изменятся.",
+      confirm: "Завершить день",
+      action: "finish-day",
+    };
+  } else if (action === "finish-day") {
+    finishDay();
+  } else if (action === "ask-rebuild") {
+    state.confirm = {
+      title: "Пересобрать маршрут?",
+      text: "День ещё без отметок, можно собрать список заново по текущим данным.",
+      confirm: "Пересобрать",
+      action: "rebuild-day",
+    };
+  } else if (action === "rebuild-day") {
+    delete db.days[todayISO()];
+    state.confirm = null;
+    persist();
+  } else if (action === "reopen-day") {
+    const day = db.days[todayISO()];
+    if (day) {
+      day.status = "active";
+      day.finishedAt = null;
+      for (const stop of day.stops) {
+        if (stop.status === "skipped" && !stop.visit) stop.status = "pending";
+      }
+      persist();
+    }
+  } else if (action === "setting-step") {
+    const field = button.dataset.field;
+    const dir = Number(button.dataset.dir);
+    if (field === "maxStops") db.settings.maxStops = Math.min(12, Math.max(4, db.settings.maxStops + dir));
+    if (field === "lowStock") db.settings.lowStock = Math.min(200, Math.max(0, db.settings.lowStock + dir));
+    persist();
+  } else if (action === "export") {
+    exportCopy();
+  } else if (action === "ask-reset-day") {
+    if (!date) return;
+    state.confirmDate = date;
+    state.pickerDate = null;
+    state.confirm = {
+      title: "Сбросить этот день?",
+      text: "Маршрут, отметки на точках и утренний список поставки за эту дату исчезнут. Остальные дни останутся, полка и склад пересчитаются по ним.",
+      confirm: "Сбросить день",
+      action: "reset-day",
+    };
+  } else if (action === "reset-day") {
+    resetDay(state.confirmDate);
+  } else if (action === "ask-reset-days") {
+    state.pickerDate = null;
+    state.confirm = {
+      title: "Сбросить все дни?",
+      text: "Все маршруты, отметки и списки поставки исчезнут. Число точек в день, порог склада и точка старта останутся.",
+      confirm: "Сбросить все дни",
+      action: "reset-days",
+    };
+  } else if (action === "reset-days") {
+    resetAllDays();
+  } else if (action === "ask-reset") {
+    state.confirm = {
+      title: "Стереть все отметки?",
+      text: "Маршруты и визиты на этом телефоне исчезнут. Сначала скачайте копию, если они нужны.",
+      confirm: "Стереть",
+      action: "reset-all",
+    };
+  } else if (action === "reset-all") {
+    db = emptyDb();
+    persist();
+    state.confirm = null;
+    state.view = "today";
+    toast("Данные стёрты");
+  } else if (action === "chain") {
+    state.chain = button.dataset.value;
+  }
+  if (state.view === "visit") stashDraft();
+  draw();
+});
+
+document.addEventListener("change", (event) => {
+  const target = event.target;
+  if (target.matches("[data-field='defectDate']")) {
+    state.draft[target.dataset.field] = target.value;
+    state.formError = "";
+    stashDraft();
+    draw();
+    return;
+  }
+  if (target.matches("#warehouse, #defect")) {
+    if (target.id === "warehouse") state.draft.warehouseQty = parseQty(target.value, true);
+    else state.draft.defectQty = parseQty(target.value, false);
+    stashDraft();
+    draw();
+    return;
+  }
+  if (target.matches("[data-field='putOnShelf']")) {
+    state.draft.putOnShelf = target.checked;
+    stashDraft();
+    return;
+  }
+  if (target.matches("[data-plan]")) {
+    const prev = db.signals[target.dataset.id] || {};
+    db.signals[target.dataset.id] = {
+      ...prev,
+      [target.dataset.plan]: target.value || null,
+      updatedAt: new Date().toISOString(),
+    };
+    persist();
+    toast("Дата сохранена");
+    draw();
+    return;
+  }
+  if (target.matches("[data-setting='startStoreId']")) {
+    db.settings.startStoreId = target.value || null;
+    persist();
+    draw();
+    return;
+  }
+  if (target.matches("[data-import]") && target.files?.[0]) {
+    importCopy(target.files[0]).then(draw);
+  }
+});
+
+document.addEventListener("input", (event) => {
+  const target = event.target;
+  if (target.matches("[data-search]")) {
+    state.query = target.value;
+    const pos = target.selectionStart;
+    draw();
+    const next = document.querySelector("[data-search]");
+    if (next) {
+      next.focus();
+      next.setSelectionRange(pos, pos);
+    }
+    return;
+  }
+  if (target.matches("#note")) state.draft.note = target.value;
+  if (target.matches("#warehouse")) state.draft.warehouseQty = parseQty(target.value, true);
+  if (target.matches("#defect")) state.draft.defectQty = parseQty(target.value, false);
+  if (target.matches("#note, #warehouse, #defect")) stashDraft();
+});
+
+if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
+  navigator.serviceWorker.register("sw.js").catch(() => {});
+}
+
+draw();

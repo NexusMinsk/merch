@@ -1,0 +1,19 @@
+{
+  "name": "Обход",
+  "short_name": "Обход",
+  "description": "Маршрут и отметки рабочего дня мерчендайзера",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f6f1e7",
+  "theme_color": "#17241c",
+  "lang": "ru",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
