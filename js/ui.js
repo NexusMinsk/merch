@@ -118,6 +118,7 @@ function todayView(state, db, today) {
         <ol>
           <li>С утра отметьте магазины, куда сегодня привезут. Завтра они станут обязательными.</li>
           <li>На точке отметьте полку, склад, брак и заказ. Дату поставки больше вписывать не нужно.</li>
+          <li>В карточке точки один раз сохраните фото магазина и схему: где пиво и где склад.</li>
           <li>Вечером откройте «Завтра»: там выкладка и магазины, где ещё не были.</li>
         </ol>
         <button class="btn ghost wide" style="margin-top:12px" type="button" data-action="dismiss-hint">Понятно</button>
@@ -189,6 +190,7 @@ function todayView(state, db, today) {
     </section>
     ${deliveryCard(db, today)}
     ${currentBlock}
+    ${currentStore ? guidePeekCard(currentStore.id, "Карточка") : ""}
     ${schemeBlock(stops)}
     <h2 class="section-title">Весь день</h2>
     ${stops.map((stop, index) => stopCard(stop, index, today, { current: stop === current, locked: true })).join("")}
@@ -238,6 +240,7 @@ function visitView(state, db) {
     <p class="lede">${esc(storeLine(store))}</p>
     ${previous}
     ${store.hint ? `<p class="hint">${esc(store.hint)}</p>` : ""}
+    ${guidePeekCard(store.id, "Изменить", true)}
     <div class="field">
       <div class="label">Полка</div>
       <div class="choice">
@@ -299,10 +302,47 @@ function storesView(state, db) {
     return `<button type="button" data-action="chain" data-value="${esc(chain)}" aria-pressed="${state.chain === chain}">${esc(label)}</button>`;
   }).join("");
   return `<h1>Точки</h1>
-    <p class="lede">22 адреса. Дату большого брака можно поставить здесь. Поставку отмечайте утром на экране «Сегодня».</p>
+    <p class="lede">22 адреса. В карточке — фото магазина и схема, как пройти к пиву и на склад. Дату большого брака тоже можно поставить здесь.</p>
     <input type="search" data-search placeholder="Найти адрес" value="${esc(state.query || "")}">
     <div class="filters">${filters}</div>
     ${stores.map((store) => storeButton(store, db.signals[store.id])).join("")}`;
+}
+
+function storeBackLabel(state) {
+  if (state.returnView === "visit") return "← К отметкам";
+  if (state.returnView === "today" || state.returnView === "day") return "← Ко дню";
+  if (state.returnView === "tomorrow") return "← К завтра";
+  if (state.returnView === "history") return "← Журнал";
+  return "← Все точки";
+}
+
+function guidePeekCard(storeId, actionLabel = "Карточка", schemeFirst = false) {
+  return `<section class="card guide-peek">
+    <div class="split"><strong>Где пиво и склад</strong>
+      <button class="text-btn" type="button" data-action="open-store" data-id="${storeId}" style="font-weight:800">${esc(actionLabel)}</button>
+    </div>
+    <div data-guide-slot="${storeId}" data-scheme-first="${schemeFirst ? "1" : ""}"><p class="hint">Фото и схема ещё не добавлены. Откройте карточку и отметьте, где пиво и где склад.</p></div>
+  </section>`;
+}
+
+export function guidePeekHtml(photoUrl, sketchUrl, schemeFirst = false) {
+  const photo = photoUrl ? `<img class="guide-photo" alt="Фото магазина" src="${esc(photoUrl)}">` : "";
+  const sketch = sketchUrl ? `<div class="sketch-board view"><img alt="Схема прохода к пиву и складу" src="${esc(sketchUrl)}"></div>` : "";
+  const missing = sketchUrl ? "" : `<p class="hint">Схема прохода ещё не нарисована.</p>`;
+  const parts = schemeFirst ? [sketch, missing, photo] : [photo, sketch, missing];
+  return parts.join("");
+}
+
+function penTools(pen) {
+  const tools = [
+    ["path", "Проход"],
+    ["beer", "Пиво"],
+    ["warehouse", "Склад"],
+    ["beer-label", "Надпись «пиво»"],
+    ["warehouse-label", "Надпись «склад»"],
+    ["eraser", "Ластик"],
+  ];
+  return `<div class="pen-tools">${tools.map(([value, label]) => `<button type="button" data-action="pen" data-pen="${value}" aria-pressed="${pen === value}">${label}</button>`).join("")}</div>`;
 }
 
 function storeButton(store, signal) {
@@ -313,10 +353,13 @@ function storeButton(store, signal) {
   if (info.shelf) bits.push(`полка: ${shelfLabel(info.shelf).toLowerCase()}`);
   if (typeof info.warehouseQty === "number") bits.push(`склад ${info.warehouseQty}`);
   if (info.defectDate) bits.push(`брак ${prettyDate(info.defectDate, { weekday: false })}`);
-  return `<button class="store-row" type="button" data-action="open-store" data-id="${store.id}">
-    <div class="brand" data-chain="${esc(store.chain)}">${esc(store.chain)}</div>
-    <div>${esc(storeLine(store))}</div>
-    <div class="meta">${esc(bits.join(" · "))}</div>
+  return `<button class="store-card" type="button" data-action="open-store" data-id="${store.id}">
+    <span class="store-thumb" data-thumb="${store.id}"></span>
+    <span class="store-card-text">
+      <div class="brand" data-chain="${esc(store.chain)}">${esc(store.chain)}</div>
+      <div>${esc(storeLine(store))}</div>
+      <div class="meta">${esc(bits.join(" · "))}<span data-guide-flag="${store.id}"></span></div>
+    </span>
   </button>`;
 }
 
@@ -325,10 +368,33 @@ function storeView(state, db) {
   if (!store) return `<p>Точка не найдена.</p>`;
   const signal = db.signals[store.id] || {};
   const visits = visitHistory(db, store.id);
-  return `<button class="back-btn" type="button" data-action="go" data-view="stores">← Все точки</button>
+  return `<button class="back-btn" type="button" data-action="close-store">${esc(storeBackLabel(state))}</button>
     <h1 style="margin-top:8px">${esc(store.chain)}</h1>
     <p class="lede">${esc(storeLine(store))}</p>
     ${store.hint ? `<p class="hint">${esc(store.hint)}</p>` : ""}
+    <section class="card">
+      <h2 class="guide-title">Фото магазина</h2>
+      <div class="photo-frame" data-photo-frame="${store.id}">
+        <p class="empty-photo">Снимите вход или фасад, чтобы узнавать магазин с улицы.</p>
+      </div>
+      <div class="stack">
+        <label class="btn secondary wide">Сфотографировать<input class="sr-only" type="file" accept="image/*" capture="environment" data-photo-input data-id="${store.id}"></label>
+        <label class="btn ghost wide">Из галереи<input class="sr-only" type="file" accept="image/*" data-photo-input data-id="${store.id}"></label>
+        <button class="btn ghost wide" type="button" data-action="ask-clear-photo" data-id="${store.id}" data-clear-photo hidden>Убрать фото</button>
+      </div>
+    </section>
+    <section class="card">
+      <h2 class="guide-title">Проход к пиву и складу</h2>
+      <p class="hint">Нарисуйте путь от входа. Жёлтым — до стеллажа с пивом, синим — до склада. Надпись ставится одним касанием.</p>
+      <div class="sketch-board">
+        <canvas data-sketch-canvas data-sketch="${store.id}" aria-label="Схема прохода к пиву и складу"></canvas>
+      </div>
+      ${penTools(state.pen)}
+      <div class="pair">
+        <button class="btn ghost" type="button" data-action="sketch-undo">Отменить штрих</button>
+        <button class="btn ghost" type="button" data-action="ask-sketch-clear">Очистить</button>
+      </div>
+    </section>
     <div class="field">
       <label for="plan-defect">Много брака в этот день</label>
       <input id="plan-defect" type="date" value="${esc(signal.defectDate || "")}" data-plan="defectDate" data-id="${store.id}">
@@ -422,7 +488,7 @@ function settingsView(db) {
     <button class="btn ghost wide" type="button" data-action="ask-cancel-day" ${db.days[todayISO()] ? "" : "disabled"}>Выключить сегодняшний день</button>
     ${db.days[todayISO()] ? "" : `<p class="hint">Сейчас рабочий день не включён.</p>`}
     <h2 class="section-title">Память телефона</h2>
-    <p class="lede">Всё, что вы вписываете, хранится в этом браузере. Склад и CRM сюда не подключены. Перед чисткой данных скачайте копию.</p>
+    <p class="lede">Отметки, фото магазинов и схемы прохода хранятся в этом браузере. Склад и CRM сюда не подключены. Перед чисткой скачайте копию — в неё попадут и схемы.</p>
     <div class="stack">
       <button class="btn secondary wide" type="button" data-action="export">Скачать копию</button>
       <label class="btn ghost wide">Восстановить из файла<input class="sr-only" type="file" accept="application/json" data-import></label>

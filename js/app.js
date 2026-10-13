@@ -1,6 +1,16 @@
 import { assessStore, planDay, primaryReason, storeById, todayISO } from "./model.js";
-import { emptyDb, exportPayload, loadDb, normalize, overrideFor, saveDb } from "./db.js";
-import { render } from "./ui.js";
+import { emptyDb, loadDb, normalize, overrideFor, saveDb } from "./db.js";
+import { guidePeekHtml, render } from "./ui.js";
+import {
+  allGuides,
+  attachSketch,
+  clearAllGuides,
+  clearPhoto,
+  clearSketch,
+  exportGuidesPayload,
+  replaceGuides,
+  savePhoto,
+} from "./guides.js";
 
 let db = loadDb();
 const state = {
@@ -16,12 +26,19 @@ const state = {
   confirm: null,
   confirmId: null,
   confirmDate: null,
+  pen: "path",
+  returnView: null,
 };
+
+let guideGen = 0;
+let sketchCtrl = null;
+const liveUrls = new Set();
 
 let lastView = "";
 
 function draw() {
   render(state, db);
+  mountGuides().catch(() => {});
   if (state.view !== lastView) {
     window.scrollTo(0, 0);
     lastView = state.view;
@@ -61,6 +78,7 @@ function readDraftFromDom() {
 }
 
 function makeDraft(stop) {
+  if (stop.draft) return { ...stop.draft };
   if (stop.visit) {
     return {
       shelf: stop.visit.shelf || null,
@@ -72,7 +90,6 @@ function makeDraft(stop) {
       note: stop.visit.note || "",
     };
   }
-  if (stop.draft) return { ...stop.draft };
   const signal = db.signals[stop.storeId] || {};
   return {
     shelf: null,
@@ -89,6 +106,7 @@ function openVisit(date, storeId, markArrival) {
   const day = db.days[date];
   const stop = day?.stops?.find((item) => item.storeId === storeId);
   if (!day || !stop) {
+    if (state.view !== "store") state.returnView = state.view;
     state.view = "store";
     state.storeId = storeId;
     state.pickerDate = null;
@@ -327,8 +345,14 @@ function finishDay() {
   toast("День закрыт");
 }
 
-function exportCopy() {
-  const blob = new Blob([exportPayload(db)], { type: "application/json" });
+async function exportCopy() {
+  let guides = {};
+  try {
+    guides = await exportGuidesPayload();
+  } catch {
+    guides = {};
+  }
+  const blob = new Blob([JSON.stringify({ ...db, guides }, null, 2)], { type: "application/json" });
   const link = document.createElement("a");
   link.href = URL.createObjectURL(blob);
   link.download = `merch-${todayISO()}.json`;
@@ -345,6 +369,16 @@ async function importCopy(file) {
       return;
     }
     db = normalize(parsed);
+    if (parsed.guides && typeof parsed.guides === "object") {
+      try {
+        await replaceGuides(parsed.guides);
+      } catch {
+        persist();
+        state.view = "today";
+        toast("Отметки восстановлены, схемы не загрузились");
+        return;
+      }
+    }
     persist();
     state.view = "today";
     toast("Данные восстановлены");
@@ -356,7 +390,7 @@ async function importCopy(file) {
 function stashDraft() {
   if (state.view !== "visit" || !state.draft || !state.date) return;
   const stop = db.days[state.date]?.stops?.find((item) => item.storeId === state.storeId);
-  if (!stop || stop.status === "done") return;
+  if (!stop) return;
   stop.draft = { ...state.draft };
   persist();
 }
@@ -435,6 +469,87 @@ function rememberDraft() {
   stashDraft();
 }
 
+function releaseUrls() {
+  for (const url of liveUrls) URL.revokeObjectURL(url);
+  liveUrls.clear();
+}
+
+function mediaUrl(value) {
+  if (!value) return "";
+  if (typeof value === "string") return value;
+  const url = URL.createObjectURL(value);
+  liveUrls.add(url);
+  return url;
+}
+
+function guideFlag(guide) {
+  if (!guide?.photo && !guide?.sketch) return " · нет схемы";
+  if (guide.photo && guide.sketch) return " · фото и схема";
+  if (guide.sketch) return " · схема есть";
+  return " · есть фото, нет схемы";
+}
+
+async function mountGuides() {
+  const gen = ++guideGen;
+  const isCurrent = () => gen === guideGen;
+  releaseUrls();
+  sketchCtrl = null;
+  let rows = [];
+  try {
+    rows = await allGuides();
+  } catch {
+    rows = [];
+  }
+  if (!isCurrent()) return;
+  const byId = new Map(rows.map((row) => [row.id, row]));
+
+  document.querySelectorAll("[data-guide-slot]").forEach((slot) => {
+    const guide = byId.get(slot.dataset.guideSlot);
+    if (!guide?.photo && !guide?.sketch) return;
+    slot.innerHTML = guidePeekHtml(mediaUrl(guide.photo), mediaUrl(guide.sketch), slot.dataset.schemeFirst === "1");
+  });
+
+  document.querySelectorAll("[data-thumb]").forEach((el) => {
+    const guide = byId.get(el.dataset.thumb);
+    const blob = guide?.photo || guide?.sketch;
+    if (!blob) return;
+    const img = document.createElement("img");
+    img.alt = "";
+    if (!guide.photo) img.className = "contain";
+    img.src = mediaUrl(blob);
+    el.replaceChildren(img);
+  });
+
+  document.querySelectorAll("[data-guide-flag]").forEach((el) => {
+    el.textContent = guideFlag(byId.get(el.dataset.guideFlag));
+  });
+
+  const frame = document.querySelector("[data-photo-frame]");
+  if (frame) {
+    const guide = byId.get(frame.dataset.photoFrame);
+    const button = document.querySelector("[data-clear-photo]");
+    if (guide?.photo) {
+      const img = document.createElement("img");
+      img.className = "guide-photo";
+      img.alt = "Фото магазина";
+      img.src = mediaUrl(guide.photo);
+      frame.replaceChildren(img);
+      button?.removeAttribute("hidden");
+    } else {
+      button?.setAttribute("hidden", "");
+    }
+  }
+
+  const canvas = document.querySelector("[data-sketch-canvas]");
+  if (!canvas) return;
+  const id = canvas.dataset.sketch;
+  sketchCtrl = attachSketch(canvas, byId.get(id)?.sketch || null, {
+    storeId: id,
+    getTool: () => state.pen || "path",
+    isCurrent,
+  });
+}
+
 document.addEventListener("click", (event) => {
   const button = event.target.closest("[data-action]");
   if (!button) return;
@@ -460,6 +575,7 @@ document.addEventListener("click", (event) => {
   } else if (action === "open-stop") {
     openVisit(date, id, false);
   } else if (action === "open-store") {
+    if (state.view !== "store") state.returnView = state.view;
     state.view = "store";
     state.storeId = id;
   } else if (action === "open-day") {
@@ -607,16 +723,74 @@ document.addEventListener("click", (event) => {
   } else if (action === "ask-reset") {
     state.confirm = {
       title: "Стереть все отметки?",
-      text: "Маршруты и визиты на этом телефоне исчезнут. Сначала скачайте копию, если они нужны.",
+      text: "Маршруты, визиты, фото магазинов и схемы прохода на этом телефоне исчезнут. Сначала скачайте копию, если они нужны.",
       confirm: "Стереть",
       action: "reset-all",
     };
   } else if (action === "reset-all") {
-    db = emptyDb();
-    persist();
+    clearAllGuides().finally(() => {
+      db = emptyDb();
+      persist();
+      state.confirm = null;
+      state.view = "today";
+      toast("Данные стёрты");
+      draw();
+    });
+    return;
+  } else if (action === "close-store") {
+    const back = state.returnView || "stores";
+    state.returnView = null;
+    if (back === "visit" && state.date && state.storeId && db.days[state.date]) {
+      openVisit(state.date, state.storeId, false);
+    } else {
+      state.view = back === "visit" ? "stores" : back;
+    }
+  } else if (action === "pen") {
+    state.pen = button.dataset.pen || "path";
+    document.querySelectorAll("[data-action='pen']").forEach((el) => {
+      el.setAttribute("aria-pressed", el.dataset.pen === state.pen ? "true" : "false");
+    });
+    return;
+  } else if (action === "sketch-undo") {
+    sketchCtrl?.undo();
+    return;
+  } else if (action === "ask-sketch-clear") {
+    state.confirm = {
+      title: "Стереть схему?",
+      text: "Рисунок прохода к пиву и складу исчезнет с карточки этой точки.",
+      confirm: "Стереть схему",
+      action: "sketch-clear",
+    };
+  } else if (action === "sketch-clear") {
+    const sketchId = state.storeId;
     state.confirm = null;
-    state.view = "today";
-    toast("Данные стёрты");
+    clearSketch(sketchId).then(() => {
+      toast("Схема стёрта");
+      draw();
+    }).catch(() => {
+      toast("Схема не стёрлась");
+      draw();
+    });
+    return;
+  } else if (action === "ask-clear-photo") {
+    state.confirmId = id;
+    state.confirm = {
+      title: "Убрать фото?",
+      text: "Снимок магазина исчезнет с карточки этой точки.",
+      confirm: "Убрать фото",
+      action: "clear-photo",
+    };
+  } else if (action === "clear-photo") {
+    const photoId = state.confirmId;
+    state.confirm = null;
+    clearPhoto(photoId).then(() => {
+      toast("Фото убрано");
+      draw();
+    }).catch(() => {
+      toast("Фото не убралось");
+      draw();
+    });
+    return;
   } else if (action === "chain") {
     state.chain = button.dataset.value;
   }
@@ -626,6 +800,19 @@ document.addEventListener("click", (event) => {
 
 document.addEventListener("change", (event) => {
   const target = event.target;
+  if (target.matches("[data-photo-input]")) {
+    const file = target.files?.[0];
+    const id = target.dataset.id;
+    target.value = "";
+    if (!file || !id) return;
+    savePhoto(id, file).then((result) => {
+      if (result === "ok") toast("Фото сохранено");
+      else if (result === "too-big") toast("Фото слишком большое");
+      else toast("Это фото не открылось");
+      draw();
+    });
+    return;
+  }
   if (target.matches("[data-field='defectDate']")) {
     state.draft[target.dataset.field] = target.value;
     state.formError = "";
