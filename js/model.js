@@ -85,6 +85,9 @@ export function longDate(iso) {
   return `${WEEKDAYS[date.getDay()]}, ${date.getDate()} ${MONTHS[date.getMonth()]}`;
 }
 
+/** Эти точки ездим через день: если вчера уже были, сегодня в маршрут не ставим. */
+export const EVERY_OTHER_DAY = ["km9", "santa-partizansky-106"];
+
 export const REASONS = {
   defect: { label: "Много брака", tone: "alert" },
   delivery: { label: "Выставить поставку", tone: "delivery" },
@@ -94,9 +97,10 @@ export const REASONS = {
   orderCheck: { label: "Проверить заказ", tone: "info" },
   control: { label: "Контроль", tone: "calm" },
   pin: { label: "Добавили сами", tone: "info" },
+  everyOther: { label: "Через день", tone: "info" },
 };
 
-const REASON_ORDER = ["defect", "delivery", "stockout", "emptyShelf", "lowStock", "orderCheck", "pin", "control"];
+const REASON_ORDER = ["defect", "delivery", "stockout", "emptyShelf", "lowStock", "orderCheck", "pin", "everyOther", "control"];
 
 export function primaryReason(reasons) {
   return REASON_ORDER.find((key) => reasons.includes(key)) || "control";
@@ -286,6 +290,10 @@ export function explainStop(stop, signal, date) {
   }
   if (stop.reasons.includes("orderCheck")) return "Заказ товароведу сделан — проверить, доехал ли товар.";
   if (stop.reasons.includes("pin")) return "Точку добавили в маршрут вручную.";
+  if (stop.reasons.includes("everyOther")) {
+    if (stop.daysSince == null) return "Эту точку ездим через день. Здесь ещё не были.";
+    return `Эту точку ездим через день. Последний визит ${stop.daysSince} ${plural(stop.daysSince, "день", "дня", "дней")} назад.`;
+  }
   if (stop.daysSince == null) return "Здесь ещё не были. Обычный контроль полки.";
   if (stop.daysSince === 0) return "Уже были сегодня. Точка в маршруте, потому что её добавили вручную.";
   return `Контроль: последний визит ${stop.daysSince} ${plural(stop.daysSince, "день", "дня", "дней")} назад.`;
@@ -323,6 +331,19 @@ function pickRotation(pool, count, start) {
   return twoOpt(nearestNeighbor(source, start).slice(0, count), start);
 }
 
+function onEveryOtherDay(item) {
+  if (!EVERY_OTHER_DAY.includes(item.storeId)) return false;
+  return item.daysSince == null || item.daysSince >= 2;
+}
+
+function markEveryOther(item) {
+  if (!onEveryOtherDay(item)) return;
+  item.reasons = item.reasons.filter((reason) => reason !== "control");
+  if (!item.reasons.includes("everyOther")) item.reasons.push("everyOther");
+  item.primary = primaryReason(item.reasons);
+  item.tier = REASON_ORDER.indexOf(item.primary);
+}
+
 export function planDay(date, db) {
   const settings = { ...db.settings, deliveries: db.deliveries || {} };
   const override = db.overrides[date] || { pin: [], drop: [], order: [] };
@@ -331,11 +352,12 @@ export function planDay(date, db) {
   const start = startPoint(settings);
   const assessed = STORES.map((store) => assessStore(store, db.signals[store.id], date, settings))
     .filter((item) => !dropped.has(item.storeId));
+  for (const item of assessed) markEveryOther(item);
 
   const informed = Object.values(db.signals).some((signal) => signal && (
     signal.lastVisitDate || signal.defectDate || signal.shelf || signal.orderStatus || typeof signal.warehouseQty === "number"
   ));
-  const due = assessed.some((item) => item.reasons.includes("delivery") || item.reasons.includes("defect"));
+  const due = assessed.some((item) => item.reasons.includes("delivery") || item.reasons.includes("defect") || item.reasons.includes("everyOther"));
   let chosen;
   let mode = "priority";
 
@@ -351,7 +373,7 @@ export function planDay(date, db) {
         item.primary = primaryReason(item.reasons);
       }
     }
-    const must = assessed.filter((item) => item.reasons.includes("defect") || item.reasons.includes("delivery") || pinned.has(item.storeId));
+    const must = assessed.filter((item) => item.reasons.includes("defect") || item.reasons.includes("delivery") || item.reasons.includes("everyOther") || pinned.has(item.storeId));
     const mustIds = new Set(must.map((item) => item.storeId));
     const problemPool = assessed
       .filter((item) => !mustIds.has(item.storeId) && (

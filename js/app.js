@@ -1,4 +1,5 @@
 import { assessStore, planDay, primaryReason, storeById, todayISO } from "./model.js";
+import { ensureTrack, formatKm, stopWatch, watchDay } from "./track.js";
 import { emptyDb, loadDb, normalize, overrideFor, saveDb } from "./db.js";
 import { guidePeekHtml, render } from "./ui.js";
 import {
@@ -39,10 +40,45 @@ let lastView = "";
 function draw() {
   render(state, db);
   mountGuides().catch(() => {});
+  syncMileage();
   if (state.view !== lastView) {
     window.scrollTo(0, 0);
     lastView = state.view;
   }
+}
+
+let mileageTimer = 0;
+
+function paintMileage(meters) {
+  const text = `Пробег ${formatKm(meters)}`;
+  document.querySelectorAll("[data-mileage]").forEach((node) => {
+    node.textContent = text;
+  });
+}
+
+function persistSoon() {
+  clearTimeout(mileageTimer);
+  mileageTimer = setTimeout(() => persist(), 2500);
+}
+
+function syncMileage() {
+  const today = todayISO();
+  const day = db.days[today];
+  if (!day || day.status !== "active") {
+    stopWatch();
+    return;
+  }
+  watchDay(day, today, {
+    onChange: (track) => {
+      paintMileage(track.meters);
+      persistSoon();
+    },
+    onDenied: () => {
+      persist();
+      toast("Геолокация запрещена. Разрешите её в настройках браузера, чтобы писать пробег.");
+      draw();
+    },
+  });
 }
 
 function toast(message) {
@@ -288,6 +324,7 @@ function startDay() {
       overrides: clone(db.overrides),
     },
     stops: plan.stops.map((stop) => ({ ...stop, reasons: stop.reasons.slice() })),
+    track: { meters: 0, last: null, denied: false },
   };
   persist();
   toast("День начат");
@@ -307,6 +344,8 @@ function latestVisitBefore(storeId, date) {
 }
 
 function cancelDay() {
+  stopWatch();
+  clearTimeout(mileageTimer);
   const today = todayISO();
   const day = db.days[today];
   if (!day) return;
@@ -335,11 +374,14 @@ function finishDay() {
   const today = todayISO();
   const day = db.days[today];
   if (!day) return;
+  stopWatch();
+  clearTimeout(mileageTimer);
   for (const stop of day.stops) {
     if (stop.status === "pending") stop.status = "skipped";
   }
   day.status = "done";
   day.finishedAt = new Date().toISOString();
+  if (day.track) day.track.last = null;
   state.confirm = null;
   persist();
   toast("День закрыт");
@@ -419,6 +461,10 @@ function rebuildSignals() {
 
 function resetDay(date) {
   if (!date) return;
+  if (date === todayISO()) {
+    stopWatch();
+    clearTimeout(mileageTimer);
+  }
   const day = db.days[date];
   const wiped = new Set((day?.stops || []).filter((stop) => stop.visit).map((stop) => stop.storeId));
   const keepDefect = {};
@@ -449,6 +495,8 @@ function resetDay(date) {
 }
 
 function resetAllDays() {
+  stopWatch();
+  clearTimeout(mileageTimer);
   db.days = {};
   db.deliveries = {};
   db.overrides = {};
@@ -661,12 +709,19 @@ document.addEventListener("click", (event) => {
   } else if (action === "cancel-day") {
     cancelDay();
   } else if (action === "ask-finish") {
+    const track = db.days[todayISO()]?.track;
+    const mileageLine = track?.denied && !(track.meters > 0)
+      ? "Пробег не записан: не было доступа к геолокации."
+      : `Пробег за день: ${formatKm(track?.meters || 0)}.`;
     state.confirm = {
       title: "Завершить день?",
-      text: "Оставшиеся точки станут пропуском. Полка и склад по ним не изменятся.",
+      text: `Оставшиеся точки станут пропуском. Полка и склад по ним не изменятся. ${mileageLine}`,
       confirm: "Завершить день",
       action: "finish-day",
     };
+  } else if (action === "enable-mileage") {
+    const day = db.days[todayISO()];
+    if (day && day.status === "active") ensureTrack(day).denied = false;
   } else if (action === "finish-day") {
     finishDay();
   } else if (action === "ask-rebuild") {
@@ -677,6 +732,8 @@ document.addEventListener("click", (event) => {
       action: "rebuild-day",
     };
   } else if (action === "rebuild-day") {
+    stopWatch();
+    clearTimeout(mileageTimer);
     delete db.days[todayISO()];
     state.confirm = null;
     persist();
@@ -728,6 +785,8 @@ document.addEventListener("click", (event) => {
       action: "reset-all",
     };
   } else if (action === "reset-all") {
+    stopWatch();
+    clearTimeout(mileageTimer);
     clearAllGuides().finally(() => {
       db = emptyDb();
       persist();
@@ -877,5 +936,12 @@ document.addEventListener("input", (event) => {
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
   navigator.serviceWorker.register("sw.js").catch(() => {});
 }
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    clearTimeout(mileageTimer);
+    persist();
+  }
+});
 
 draw();

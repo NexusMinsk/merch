@@ -94,6 +94,7 @@ h2 { font-size: 20px; letter-spacing: -0.02em; }
 }
 .hero .eyebrow { color: #c9c2b4; }
 .hero h1 { font-size: 30px; }
+.hero .fine { margin-top: 10px; color: #c9c2b4; font-size: 13px; line-height: 1.4; }
 .stats {
   display: flex;
   flex-wrap: wrap;

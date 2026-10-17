@@ -19,6 +19,7 @@ import {
   yandexRouteUrls,
   yandexSearchUrl,
 } from "./model.js";
+import { formatKm } from "./track.js";
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({
@@ -102,7 +103,21 @@ function planIntro(plan) {
   if (plan.overflow) {
     return "Обязательных точек больше лимита. Брак и вчерашнюю поставку оставил все.";
   }
-  return "Обязательно брак и выкладка вчерашней поставки. Остальные места — остатки и магазины, где давно не были.";
+  return "Обязательно брак и выкладка вчерашней поставки. 9-й км и Партизанский 106 — через день: если вчера уже были, сегодня их нет. Остальные места — остатки и магазины, где давно не были.";
+}
+
+function mileageBits(day, { live = false } = {}) {
+  if (!live && !day?.track) return { stat: "", note: "", denied: false };
+  const track = day?.track;
+  const denied = Boolean(track?.denied);
+  const empty = !(track?.meters > 0);
+  const stat = denied && empty
+    ? `<span class="stat" data-mileage>Пробег не пишется</span>`
+    : `<span class="stat" data-mileage>Пробег ${formatKm(track?.meters || 0)}</span>`;
+  const note = live && !denied
+    ? `<p class="fine">Пробег пишется по GPS, пока день открыт. Если свернуть приложение, часть дороги может не попасть в километраж.</p>`
+    : "";
+  return { stat, note, denied };
 }
 
 function todayView(state, db, today) {
@@ -146,12 +161,14 @@ function todayView(state, db, today) {
 
   if (day.status === "done") {
     const skipped = stops.filter((stop) => stop.status === "skipped").length;
+    const mileage = mileageBits(day);
     return `<section class="hero">
         <p class="eyebrow">${esc(longDate(today))}</p>
         <h1>День закрыт</h1>
         <div class="stats">
           <span class="stat">${done} готово</span>
           ${skipped ? `<span class="stat">${skipped} пропуск</span>` : ""}
+          ${mileage.stat}
         </div>
       </section>
       ${deliveryCard(db, today)}
@@ -182,12 +199,15 @@ function todayView(state, db, today) {
     : `<section class="card now"><h2>Точки закончились</h2><p class="why">Можно закрыть день.</p></section>`;
 
   const fresh = stops.every((stop) => stop.status === "pending" && !stop.arrivedAt);
+  const mileage = mileageBits(day, { live: true });
   return `<section class="hero">
       <p class="eyebrow">${esc(longDate(today))}</p>
       <h1>В работе</h1>
-      <div class="stats"><span class="stat">${done} из ${stops.length}</span></div>
+      <div class="stats"><span class="stat">${done} из ${stops.length}</span>${mileage.stat}</div>
       <div class="progress"><span style="width:${progress}%"></span></div>
+      ${mileage.note}
     </section>
+    ${mileage.denied ? `<button class="btn ghost wide" style="margin-top:10px" type="button" data-action="enable-mileage">Разрешить геолокацию для пробега</button>` : ""}
     ${deliveryCard(db, today)}
     ${currentBlock}
     ${currentStore ? guidePeekCard(currentStore.id, "Карточка") : ""}
@@ -428,7 +448,7 @@ function historyView(db) {
       const defects = day.stops.reduce((sum, stop) => sum + (Number(stop.visit?.defectQty) || 0), 0);
       return `<button class="day-row" type="button" data-action="open-day" data-date="${date}">
         <div class="split"><strong>${esc(prettyDate(date))}</strong><span>${day.status === "done" ? "закрыт" : "в работе"}</span></div>
-        <div class="meta">${done} из ${day.stops.length} · брак ${defects} шт</div>
+        <div class="meta">${done} из ${day.stops.length} · брак ${defects} шт${day.track?.meters > 0 ? ` · пробег ${formatKm(day.track.meters)}` : ""}</div>
       </button>`;
     }).join("")}`;
 }
@@ -438,7 +458,7 @@ function dayView(state, db) {
   if (!day) return `<p>День не найден.</p>`;
   return `<button class="back-btn" type="button" data-action="go" data-view="history">← Журнал</button>
     <h1 style="margin-top:8px">${esc(prettyDate(state.date))}</h1>
-    <p class="lede">${day.status === "done" ? "День закрыт." : "День ещё открыт."}</p>
+    <p class="lede">${day.status === "done" ? "День закрыт." : "День ещё открыт."}${day.track?.meters > 0 ? ` Пробег ${formatKm(day.track.meters)}.` : ""}</p>
     ${schemeBlock(day.stops)}
     ${day.stops.map((stop, index) => stopCard(stop, index, state.date, { locked: true })).join("")}
     <button class="btn ghost wide" type="button" data-action="ask-reset-day" data-date="${state.date}" style="margin-top:16px">Сбросить этот день</button>`;
@@ -457,7 +477,7 @@ function settingsView(db) {
         <input readonly value="${db.settings.maxStops}">
         <button class="mini" type="button" data-action="setting-step" data-field="maxStops" data-dir="1">+</button>
       </div>
-      <p class="hint">Брак и поставка добавляются даже сверх лимита.</p>
+      <p class="hint">Брак, поставка и точки «через день» остаются в маршруте даже сверх лимита.</p>
     </div>
     <div class="field">
       <div class="label">Мало на складе, если меньше: ${db.settings.lowStock} шт</div>
@@ -475,6 +495,7 @@ function settingsView(db) {
     <h2 class="section-title">Как строится маршрут</h2>
     <ol class="rules">
       <li>Дата большого брака — точка идёт первой.</li>
+      <li>9-й км и Партизанский 106 ездим через день. Если вчера там уже были, сегодня их нет. Брак и поставка всё равно ставят точку в маршрут.</li>
       <li>Утренний список поставки — на следующий день эти магазины обязательные, товар нужно выставить.</li>
       <li>Пустая полка и ноль на складе поднимают точку. Малый остаток занимает только часть дня.</li>
       <li>Остальные места — магазины, где ещё не были или давно не заезжали.</li>
@@ -594,7 +615,7 @@ function sideHtml(state, db, today) {
   if (["today", "tomorrow", "visit", "day"].includes(state.view) && plan.stops?.length) {
     return `<h2>Карта</h2>${schemeBlock(plan.stops)}<ol class="rules"><li>Красный номер — брак, ехать первым.</li><li>Жёлтый — поставка или мало товара.</li><li>Зелёный — обычный контроль.</li></ol>`;
   }
-  return `<h2>Правила</h2><ol class="rules"><li>Брак в указанный день — первая точка.</li><li>Список поставки с утра — выкладка на следующий день.</li><li>Дальше остатки и магазины, где давно не были.</li><li>Ссылка Яндекса начинается от вашего места.</li></ol>`;
+  return `<h2>Правила</h2><ol class="rules"><li>Брак в указанный день — первая точка.</li><li>Список поставки с утра — выкладка на следующий день.</li><li>9-й км и Партизанский 106 — через день.</li><li>Дальше остатки и магазины, где давно не были.</li><li>Ссылка Яндекса начинается от вашего места.</li></ol>`;
 }
 
 export function render(state, db) {
