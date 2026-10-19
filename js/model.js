@@ -14,6 +14,7 @@ export const STORES = [
   { id: "santa-slavinskogo", chain: "Санта", address: "Славинского 45", place: "", maps: "Санта, ул. Славинского 45, Минск", lat: 53.938773, lon: 27.64203 },
   { id: "santa-tolbukhina", chain: "Санта", address: "Толбухина 4", place: "", maps: "Санта, ул. Толбухина 4, Минск", lat: 53.92698, lon: 27.613994 },
   { id: "green-pobediteley", chain: "Грин", address: "Победителей 84", place: "", maps: "Грин, пр-т Победителей 84, Минск", lat: 53.937874, lon: 27.485292 },
+  { id: "santa-kamennogorskaya", chain: "Санта", address: "Каменногорская 8", place: "", maps: "Санта, ул. Каменногорская 8, Минск", lat: 53.912034, lon: 27.416725 },
   { id: "gippo-partizansky", chain: "Гиппо", address: "Партизанский 79", place: "", maps: "Гиппо, пр-т Партизанский 79, Минск", lat: 53.876342, lon: 27.625826 },
   { id: "gippo-pobediteley", chain: "Гиппо", address: "Победителей 9", place: "", maps: "Гиппо, пр-т Победителей 9, Минск", lat: 53.908456, lon: 27.548499 },
   { id: "almi-partizansky", chain: "Алми", address: "Партизанский 19А", place: "", maps: "Алми, пр-т Партизанский 19А, Минск", lat: 53.884111, lon: 27.59295 },

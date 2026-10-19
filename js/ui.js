@@ -19,7 +19,6 @@ import {
   yandexRouteUrls,
   yandexSearchUrl,
 } from "./model.js";
-import { formatKm } from "./track.js";
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({
@@ -106,20 +105,6 @@ function planIntro(plan) {
   return "Обязательно брак и выкладка вчерашней поставки. 9-й км и Партизанский 106 — через день: если вчера уже были, сегодня их нет. Остальные места — остатки и магазины, где давно не были.";
 }
 
-function mileageBits(day, { live = false } = {}) {
-  if (!live && !day?.track) return { stat: "", note: "", denied: false };
-  const track = day?.track;
-  const denied = Boolean(track?.denied);
-  const empty = !(track?.meters > 0);
-  const stat = denied && empty
-    ? `<span class="stat" data-mileage>Пробег не пишется</span>`
-    : `<span class="stat" data-mileage>Пробег ${formatKm(track?.meters || 0)}</span>`;
-  const note = live && !denied
-    ? `<p class="fine">Пробег пишется по GPS, пока день открыт. Если свернуть приложение, часть дороги может не попасть в километраж.</p>`
-    : "";
-  return { stat, note, denied };
-}
-
 function todayView(state, db, today) {
   const day = db.days[today];
   const plan = day || planDay(today, db);
@@ -161,14 +146,12 @@ function todayView(state, db, today) {
 
   if (day.status === "done") {
     const skipped = stops.filter((stop) => stop.status === "skipped").length;
-    const mileage = mileageBits(day);
     return `<section class="hero">
         <p class="eyebrow">${esc(longDate(today))}</p>
         <h1>День закрыт</h1>
         <div class="stats">
           <span class="stat">${done} готово</span>
           ${skipped ? `<span class="stat">${skipped} пропуск</span>` : ""}
-          ${mileage.stat}
         </div>
       </section>
       ${deliveryCard(db, today)}
@@ -199,15 +182,12 @@ function todayView(state, db, today) {
     : `<section class="card now"><h2>Точки закончились</h2><p class="why">Можно закрыть день.</p></section>`;
 
   const fresh = stops.every((stop) => stop.status === "pending" && !stop.arrivedAt);
-  const mileage = mileageBits(day, { live: true });
   return `<section class="hero">
       <p class="eyebrow">${esc(longDate(today))}</p>
       <h1>В работе</h1>
-      <div class="stats"><span class="stat">${done} из ${stops.length}</span>${mileage.stat}</div>
+      <div class="stats"><span class="stat">${done} из ${stops.length}</span></div>
       <div class="progress"><span style="width:${progress}%"></span></div>
-      ${mileage.note}
     </section>
-    ${mileage.denied ? `<button class="btn ghost wide" style="margin-top:10px" type="button" data-action="enable-mileage">Разрешить геолокацию для пробега</button>` : ""}
     ${deliveryCard(db, today)}
     ${currentBlock}
     ${currentStore ? guidePeekCard(currentStore.id, "Карточка") : ""}
@@ -448,7 +428,7 @@ function historyView(db) {
       const defects = day.stops.reduce((sum, stop) => sum + (Number(stop.visit?.defectQty) || 0), 0);
       return `<button class="day-row" type="button" data-action="open-day" data-date="${date}">
         <div class="split"><strong>${esc(prettyDate(date))}</strong><span>${day.status === "done" ? "закрыт" : "в работе"}</span></div>
-        <div class="meta">${done} из ${day.stops.length} · брак ${defects} шт${day.track?.meters > 0 ? ` · пробег ${formatKm(day.track.meters)}` : ""}</div>
+        <div class="meta">${done} из ${day.stops.length} · брак ${defects} шт</div>
       </button>`;
     }).join("")}`;
 }
@@ -458,7 +438,7 @@ function dayView(state, db) {
   if (!day) return `<p>День не найден.</p>`;
   return `<button class="back-btn" type="button" data-action="go" data-view="history">← Журнал</button>
     <h1 style="margin-top:8px">${esc(prettyDate(state.date))}</h1>
-    <p class="lede">${day.status === "done" ? "День закрыт." : "День ещё открыт."}${day.track?.meters > 0 ? ` Пробег ${formatKm(day.track.meters)}.` : ""}</p>
+    <p class="lede">${day.status === "done" ? "День закрыт." : "День ещё открыт."}</p>
     ${schemeBlock(day.stops)}
     ${day.stops.map((stop, index) => stopCard(stop, index, state.date, { locked: true })).join("")}
     <button class="btn ghost wide" type="button" data-action="ask-reset-day" data-date="${state.date}" style="margin-top:16px">Сбросить этот день</button>`;
