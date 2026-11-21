@@ -1,4 +1,4 @@
-const CACHE = "merch-7";
+const CACHE = "merch-10";
 const FILES = ["./index.html", "./css/app.css", "./js/app.js", "./js/ui.js", "./js/model.js", "./js/db.js", "./js/guides.js", "./js/shots.js", "./js/agent.js", "./js/sync.js", "./manifest.webmanifest", "./icon.svg"];
 
 self.addEventListener("install", (event) => {

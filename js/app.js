@@ -1,15 +1,13 @@
-import { assessStore, planDay, primaryReason, storeById, todayISO } from "./model.js";
+import { assessStore, currentPerson, planDay, primaryReason, storeById, todayISO } from "./model.js";
 import { askBeaver } from "./agent.js";
 import { shotFlags, shotUrl, saveShot } from "./shots.js";
 import { pullShared, pushShared } from "./sync.js";
 import { emptyDb, loadDb, normalize, overrideFor, saveDb } from "./db.js";
-import { guidePeekHtml, render } from "./ui.js";
+import { render } from "./ui.js";
 import {
   allGuides,
-  attachSketch,
   clearAllGuides,
   clearPhoto,
-  clearSketch,
   exportGuidesPayload,
   replaceGuides,
   savePhoto,
@@ -37,7 +35,6 @@ const state = {
 };
 
 let guideGen = 0;
-let sketchCtrl = null;
 const liveUrls = new Set();
 
 let lastView = "";
@@ -408,7 +405,7 @@ async function importCopy(file) {
       } catch {
         persist();
         state.view = "today";
-        toast("Отметки восстановлены, схемы не загрузились");
+        toast("Отметки восстановлены, фото магазинов не загрузились");
         return;
       }
     }
@@ -516,17 +513,13 @@ function mediaUrl(value) {
 }
 
 function guideFlag(guide) {
-  if (!guide?.photo && !guide?.sketch) return " · нет схемы";
-  if (guide.photo && guide.sketch) return " · фото и схема";
-  if (guide.sketch) return " · схема есть";
-  return " · есть фото, нет схемы";
+  return guide?.photo ? " · есть фото входа" : "";
 }
 
 async function mountGuides() {
   const gen = ++guideGen;
   const isCurrent = () => gen === guideGen;
   releaseUrls();
-  sketchCtrl = null;
   let rows = [];
   try {
     rows = await allGuides();
@@ -536,20 +529,12 @@ async function mountGuides() {
   if (!isCurrent()) return;
   const byId = new Map(rows.map((row) => [row.id, row]));
 
-  document.querySelectorAll("[data-guide-slot]").forEach((slot) => {
-    const guide = byId.get(slot.dataset.guideSlot);
-    if (!guide?.photo && !guide?.sketch) return;
-    slot.innerHTML = guidePeekHtml(mediaUrl(guide.photo), mediaUrl(guide.sketch), slot.dataset.schemeFirst === "1");
-  });
-
   document.querySelectorAll("[data-thumb]").forEach((el) => {
     const guide = byId.get(el.dataset.thumb);
-    const blob = guide?.photo || guide?.sketch;
-    if (!blob) return;
+    if (!guide?.photo) return;
     const img = document.createElement("img");
     img.alt = "";
-    if (!guide.photo) img.className = "contain";
-    img.src = mediaUrl(blob);
+    img.src = mediaUrl(guide.photo);
     el.replaceChildren(img);
   });
 
@@ -572,15 +557,6 @@ async function mountGuides() {
       button?.setAttribute("hidden", "");
     }
   }
-
-  const canvas = document.querySelector("[data-sketch-canvas]");
-  if (!canvas) return;
-  const id = canvas.dataset.sketch;
-  sketchCtrl = attachSketch(canvas, byId.get(id)?.sketch || null, {
-    storeId: id,
-    getTool: () => state.pen || "path",
-    isCurrent,
-  });
 }
 
 document.addEventListener("click", (event) => {
@@ -621,10 +597,12 @@ document.addEventListener("click", (event) => {
   } else if (action === "confirm-drop") {
     dropStop(state.confirmDate, state.confirmId, true);
   } else if (action === "open-picker") {
+    if (currentPerson(db)?.role === "merch") return;
     state.pickerDate = date;
     state.deliveryOpen = false;
     state.confirm = null;
   } else if (action === "open-deliveries") {
+    if (currentPerson(db)?.role === "merch") return;
     state.view = "deliveries";
     state.deliveryOpen = false;
     state.pickerDate = null;
@@ -635,6 +613,7 @@ document.addEventListener("click", (event) => {
     state.view = "today";
     state.deliveryOpen = false;
   } else if (action === "toggle-delivery") {
+    if (currentPerson(db)?.role === "merch") return;
     toggleDelivery(id);
   } else if (action === "close-picker" || action === "close-confirm" || action === "close-overlay") {
     state.pickerDate = null;
@@ -666,7 +645,7 @@ document.addEventListener("click", (event) => {
       persist();
       draw();
     }).catch((error) => {
-      db.chat.push({ role: "assistant", content: error?.message || "Помощник не ответил", at: new Date().toISOString() });
+      db.chat.push({ role: "assistant", content: error?.message || "I.R.I.S. не ответил", at: new Date().toISOString() });
       state.chatBusy = false;
       persist();
       draw();
@@ -804,7 +783,7 @@ document.addEventListener("click", (event) => {
   } else if (action === "ask-reset") {
     state.confirm = {
       title: "Стереть все отметки?",
-      text: "Маршруты, визиты, фото магазинов и схемы прохода на этом телефоне исчезнут. Сначала скачайте копию, если они нужны.",
+      text: "Маршруты, визиты и фото на этом телефоне исчезнут. Сначала скачайте копию, если они нужны.",
       confirm: "Стереть",
       action: "reset-all",
     };
@@ -826,33 +805,6 @@ document.addEventListener("click", (event) => {
     } else {
       state.view = back === "visit" ? "stores" : back;
     }
-  } else if (action === "pen") {
-    state.pen = button.dataset.pen || "path";
-    document.querySelectorAll("[data-action='pen']").forEach((el) => {
-      el.setAttribute("aria-pressed", el.dataset.pen === state.pen ? "true" : "false");
-    });
-    return;
-  } else if (action === "sketch-undo") {
-    sketchCtrl?.undo();
-    return;
-  } else if (action === "ask-sketch-clear") {
-    state.confirm = {
-      title: "Стереть схему?",
-      text: "Рисунок прохода к пиву и складу исчезнет с карточки этой точки.",
-      confirm: "Стереть схему",
-      action: "sketch-clear",
-    };
-  } else if (action === "sketch-clear") {
-    const sketchId = state.storeId;
-    state.confirm = null;
-    clearSketch(sketchId).then(() => {
-      toast("Схема стёрта");
-      draw();
-    }).catch(() => {
-      toast("Схема не стёрлась");
-      draw();
-    });
-    return;
   } else if (action === "ask-clear-photo") {
     state.confirmId = id;
     state.confirm = {

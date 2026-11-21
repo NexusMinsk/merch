@@ -7,6 +7,7 @@ import {
   orderLabel,
   planDay,
   plural,
+  currentPerson,
   scopeStores,
   prettyDate,
   reasonChips,
@@ -117,9 +118,9 @@ function todayView(state, db, today) {
     ? `<section class="hint-card">
         <h2>С чего начать</h2>
         <ol>
-          <li>Утром нажмите «Отметить магазины». Завтра эти магазины будут обязательными.</li>
+          <li>${currentPerson(db)?.role === "merch" ? "Магазины приходят от Светланы сами. Выбирать их вручную не нужно." : "Утром список заливает Светлана. Завтра эти магазины будут обязательными."}</li>
           <li>На точке снимите три фото и отметьте полку, склад и брак.</li>
-          <li>«Помощник» — отдельный чат. Светлана остаётся руководителем.</li>
+          <li>«I.R.I.S.» — отдельный чат. Светлана остаётся руководителем.</li>
         </ol>
         <button class="btn ghost wide" style="margin-top:12px" type="button" data-action="dismiss-hint">Понятно</button>
       </section>`
@@ -140,8 +141,8 @@ function todayView(state, db, today) {
       </div>
       ${schemeBlock(stops)}
       <h2 class="section-title">Маршрут</h2>
-      ${stops.map((stop, index) => stopCard(stop, index, today, { locked: false })).join("") || `<p class="lede">Маршрут пустой. Добавьте точку или уберите исключение.</p>`}
-      <button class="btn ghost wide" style="margin-top:10px" type="button" data-action="open-picker" data-date="${today}">Добавить точку</button>`;
+      ${stops.map((stop, index) => stopCard(stop, index, today, { locked: false })).join("") || `<p class="lede">${currentPerson(db)?.role === "merch" ? "Маршрут пустой. Точки появятся из списка Светланы." : "Маршрут пустой. Добавьте точку или уберите исключение."}</p>`}
+      ${addPointButton(db, today)}`;
   }
 
   if (day.status === "done") {
@@ -190,11 +191,11 @@ function todayView(state, db, today) {
     </section>
     ${deliveryCard(db, today)}
     ${currentBlock}
-    ${currentStore ? guidePeekCard(currentStore.id, "Карточка") : ""}
+    ${currentStore ? `<button class="btn ghost wide" type="button" data-action="open-store" data-id="${currentStore.id}">Карточка магазина</button>` : ""}
     ${schemeBlock(stops)}
     <h2 class="section-title">Весь день</h2>
     ${stops.map((stop, index) => stopCard(stop, index, today, { current: stop === current, locked: true })).join("")}
-    <button class="btn ghost wide" style="margin-top:10px" type="button" data-action="open-picker" data-date="${today}">Добавить точку</button>
+    ${addPointButton(db, today)}
     <div class="stack">
       ${linksHtml(stops)}
       ${fresh ? `<button class="btn ghost wide" type="button" data-action="ask-rebuild">Пересобрать маршрут</button>` : ""}
@@ -217,7 +218,7 @@ function tomorrowView(db, today) {
     <p class="lede">${esc(planIntro(plan))}</p>
     <h2 class="section-title">Маршрут</h2>
     ${plan.stops.map((stop, index) => stopCard(stop, index, date, { locked: false })).join("") || `<p class="lede">На завтра точек нет.</p>`}
-    <button class="btn ghost wide" style="margin-top:10px" type="button" data-action="open-picker" data-date="${date}">Добавить точку</button>`;
+    ${addPointButton(db, date)}`;
 }
 
 function visitView(state, db) {
@@ -240,9 +241,9 @@ function visitView(state, db) {
     <p class="lede">${esc(storeLine(store))}</p>
     ${previous}
     ${store.hint ? `<p class="hint">${esc(store.hint)}</p>` : ""}
-    <section class="card">
+    <section class="card visit-shots">
       <h2 class="guide-title">Фото этого визита</h2>
-      <p class="hint">Полка, склад и брак — снимки именно сегодня. Схему «где пиво» рисуют один раз, она ниже.</p>
+      <p class="hint">Только сегодня: полка, склад и брак. Это не фото входа магазина.</p>
       <div class="shot-grid">
         ${[["shelf", "Полка"], ["warehouse", "Склад"], ["defect", "Брак"]].map(([kind, label]) => `<label class="shot">
           <span data-shot="${esc(state.date)}|${esc(store.id)}|${kind}">${label}</span>
@@ -250,7 +251,7 @@ function visitView(state, db) {
         </label>`).join("")}
       </div>
     </section>
-    ${guidePeekCard(store.id, "Открыть схему", true)}
+    <button class="text-btn" type="button" data-action="open-store" data-id="${store.id}" style="font-weight:800;margin:4px 0 12px">Фото входа магазина</button>
     <div class="field">
       <div class="label">Полка</div>
       <div class="choice">
@@ -312,7 +313,7 @@ function storesView(state, db) {
     return `<button type="button" data-action="chain" data-value="${esc(chain)}" aria-pressed="${state.chain === chain}">${esc(label)}</button>`;
   }).join("");
   return `<h1>Точки</h1>
-    <p class="lede">${scopeStores(db).length} адресов в этом телефоне. В карточке — фото магазина и схема, как пройти к пиву и на склад. На визите отдельно снимаются полка, склад и брак.</p>
+    <p class="lede">${scopeStores(db).length} адресов. В карточке — фото входа. На визите отдельно снимаются полка, склад и брак.</p>
     <input type="search" data-search placeholder="Найти адрес" value="${esc(state.query || "")}">
     <div class="filters">${filters}</div>
     ${stores.map((store) => storeButton(store, db.signals[store.id])).join("")}`;
@@ -324,35 +325,6 @@ function storeBackLabel(state) {
   if (state.returnView === "tomorrow") return "← К завтра";
   if (state.returnView === "history") return "← Журнал";
   return "← Все точки";
-}
-
-function guidePeekCard(storeId, actionLabel = "Карточка", schemeFirst = false) {
-  return `<section class="card guide-peek">
-    <div class="split"><strong>Где пиво и склад</strong>
-      <button class="text-btn" type="button" data-action="open-store" data-id="${storeId}" style="font-weight:800">${esc(actionLabel)}</button>
-    </div>
-    <div data-guide-slot="${storeId}" data-scheme-first="${schemeFirst ? "1" : ""}"><p class="hint">Схемы ещё нет. Откройте её и отметьте, где пиво и где склад.</p></div>
-  </section>`;
-}
-
-export function guidePeekHtml(photoUrl, sketchUrl, schemeFirst = false) {
-  const photo = photoUrl ? `<img class="guide-photo" alt="Фото магазина" src="${esc(photoUrl)}">` : "";
-  const sketch = sketchUrl ? `<div class="sketch-board view"><img alt="Схема прохода к пиву и складу" src="${esc(sketchUrl)}"></div>` : "";
-  const missing = sketchUrl ? "" : `<p class="hint">Схема прохода ещё не нарисована.</p>`;
-  const parts = schemeFirst ? [sketch, missing, photo] : [photo, sketch, missing];
-  return parts.join("");
-}
-
-function penTools(pen) {
-  const tools = [
-    ["path", "Проход"],
-    ["beer", "Пиво"],
-    ["warehouse", "Склад"],
-    ["beer-label", "Надпись «пиво»"],
-    ["warehouse-label", "Надпись «склад»"],
-    ["eraser", "Ластик"],
-  ];
-  return `<div class="pen-tools">${tools.map(([value, label]) => `<button type="button" data-action="pen" data-pen="${value}" aria-pressed="${pen === value}">${label}</button>`).join("")}</div>`;
 }
 
 function storeButton(store, signal) {
@@ -391,18 +363,6 @@ function storeView(state, db) {
         <label class="btn secondary wide">Сфотографировать<input class="sr-only" type="file" accept="image/*" capture="environment" data-photo-input data-id="${store.id}"></label>
         <label class="btn ghost wide">Из галереи<input class="sr-only" type="file" accept="image/*" data-photo-input data-id="${store.id}"></label>
         <button class="btn ghost wide" type="button" data-action="ask-clear-photo" data-id="${store.id}" data-clear-photo hidden>Убрать фото</button>
-      </div>
-    </section>
-    <section class="card">
-      <h2 class="guide-title">Проход к пиву и складу</h2>
-      <p class="hint">Нарисуйте путь от входа. Жёлтым — до стеллажа с пивом, синим — до склада. Надпись ставится одним касанием.</p>
-      <div class="sketch-board">
-        <canvas data-sketch-canvas data-sketch="${store.id}" aria-label="Схема прохода к пиву и складу"></canvas>
-      </div>
-      ${penTools(state.pen)}
-      <div class="pair">
-        <button class="btn ghost" type="button" data-action="sketch-undo">Отменить штрих</button>
-        <button class="btn ghost" type="button" data-action="ask-sketch-clear">Очистить</button>
       </div>
     </section>
     <div class="field">
@@ -471,12 +431,12 @@ function settingsView(db) {
     <div class="field">
       <label for="api">Адрес общей базы</label>
       <input id="api" data-setting="apiBase" placeholder="http://192.168.0.10:8787" value="${esc(db.settings.apiBase || "")}">
-      <p class="hint">На каждом телефоне откройте приложение по этому адресу, в одной сети Wi‑Fi. С сайта на GitHub общая база не подключится. Ключ помощника лежит на сервере.</p>
+      <p class="hint">На каждом телефоне откройте приложение по этому адресу, в одной сети Wi‑Fi. С сайта на GitHub общая база не подключится. Ключ I.R.I.S. лежит на сервере.</p>
     </div>
     <div class="field">
-      <label for="llm">Ключ помощника на этом телефоне</label>
+      <label for="llm">Ключ I.R.I.S. на этом телефоне</label>
       <input id="llm" data-setting="llmKey" type="password" autocomplete="off" placeholder="если сервера нет" value="${esc(db.settings.llmKey || "")}">
-      <p class="hint">Нужен только без сервера. В выгрузку и на общий сервер ключ не уходит.</p>
+      <p class="hint">I.R.I.S. — информационный разведчик и интеллектуальный синтезатор. Ключ нужен только без сервера и в общую базу не уходит.</p>
     </div>
     <button class="btn ghost wide" style="margin-bottom:14px" type="button" data-action="go" data-view="desk">Стол руководителя</button>
     <div class="field">
@@ -518,7 +478,7 @@ function settingsView(db) {
     <button class="btn ghost wide" type="button" data-action="ask-cancel-day" ${db.days[todayISO()] ? "" : "disabled"}>Отменить начало сегодня</button>
     ${db.days[todayISO()] ? "" : `<p class="hint">Сейчас рабочий день не включён.</p>`}
     <h2 class="section-title">Память телефона</h2>
-    <p class="lede">Отметки, фото магазинов и схемы прохода хранятся в этом браузере. Склад и CRM сюда не подключены. Перед чисткой скачайте копию — в неё попадут и схемы.</p>
+    <p class="lede">Отметки и фото хранятся в этом браузере. Склад и CRM сюда не подключены. Перед чисткой скачайте копию.</p>
     <div class="stack">
       <button class="btn secondary wide" type="button" data-action="export">Скачать копию</button>
       <label class="btn ghost wide">Восстановить из файла<input class="sr-only" type="file" accept="application/json" data-import></label>
@@ -526,16 +486,29 @@ function settingsView(db) {
     </div>`;
 }
 
+function isMerch(db) {
+  return currentPerson(db)?.role === "merch";
+}
+
+function addPointButton(db, date) {
+  if (isMerch(db)) return "";
+  return `<button class="btn ghost wide" style="margin-top:10px" type="button" data-action="open-picker" data-date="${date}">Добавить точку</button>`;
+}
+
 function deliveryCard(db, today) {
   const ids = db.deliveries?.[today] || [];
   const names = ids.map((id) => storeById(id)).filter(Boolean);
+  const merch = isMerch(db);
   const list = names.length
     ? `<div class="chips">${names.map((store) => `<span class="chip warn">${esc(store.chain)} · ${esc(store.address)}</span>`).join("")}</div>`
-    : `<p class="hint">Пока пусто. Отмеченные магазины встанут в завтрашний маршрут.</p>`;
+    : `<p class="hint">${merch ? "Пока пусто. Список появится, когда Светлана его зальёт." : "Пока пусто. Отмеченные магазины встанут в завтрашний маршрут."}</p>`;
+  const button = merch
+    ? ""
+    : `<button class="btn secondary wide" type="button" data-action="open-deliveries" style="margin-top:10px">Отметить магазины</button>`;
   return `<section class="card">
-    <div class="split"><strong>Куда привезут сегодня</strong><span class="meta">${ids.length}</span></div>
+    <div class="split"><strong>${merch ? "Список от Светланы" : "Куда привезут сегодня"}</strong><span class="meta">${ids.length}</span></div>
     ${list}
-    <button class="btn secondary wide" type="button" data-action="open-deliveries" style="margin-top:10px">Отметить магазины</button>
+    ${button}
   </section>`;
 }
 
@@ -596,10 +569,10 @@ function deskView(db) {
     .join("");
   const team = people.length
     ? people.map((person) => `<div class="store-row"><strong>${esc(person.name)}</strong><div class="meta">${person.role === "lead" ? "руководитель" : "мерч"}</div></div>`).join("")
-    : `<p class="hint">Сначала добавьте руководителя и мерчей. Имена можно надиктовать помощнику.</p>`;
+    : `<p class="hint">Сначала добавьте руководителя и мерчей. Имена можно надиктовать I.R.I.S.</p>`;
   return `<h1>Стол</h1>
-    <p class="lede">Утро руководителя: кто ездит в какой магазин и куда сегодня везут. Список можно продиктовать помощнику — в маршрут он попадёт завтра.</p>
-    <button class="btn secondary wide" type="button" data-action="toggle-chat">Написать помощнику</button>
+    <p class="lede">Утро руководителя: кто ездит в какой магазин и куда сегодня везут. Список можно продиктовать I.R.I.S. — в маршрут он попадёт завтра.</p>
+    <button class="btn secondary wide" type="button" data-action="toggle-chat">Написать I.R.I.S.</button>
     <h2 class="section-title">Люди</h2>
     ${team}
     <div class="field">
@@ -626,8 +599,8 @@ function chatHtml(state, db) {
   if (!state.chatOpen) return "";
   const lines = (db.chat || []).map((message) => `<div class="bubble ${message.role === "user" ? "user" : ""}">${esc(message.content)}</div>`).join("");
   return `<section class="sheet chat-sheet">
-    <div class="split"><h2>Помощник</h2><button class="text-btn" type="button" data-action="toggle-chat">Закрыть</button></div>
-    <p class="hint">Чат для руководителя и мерчей. Помощник меняет поставки, людей и число точек. Светлану он не заменяет.</p>
+    <div class="split"><h2>I.R.I.S.</h2><button class="text-btn" type="button" data-action="toggle-chat">Закрыть</button></div>
+    <p class="hint">I.R.I.S. — информационный разведчик и интеллектуальный синтезатор. Чат для руководителя и мерчей: меняет поставки, людей и число точек. Светлану не заменяет.</p>
     <div class="chat-log">${lines || `<p class="hint">Например: «поставка сегодня Гиппо Некрасова и Санта Толбухина».</p>`}${state.chatBusy ? `<p class="hint">Смотрю данные…</p>` : ""}</div>
     <div class="chat-compose">
       <textarea data-chat-input placeholder="Поставка, люди или число точек" ${state.chatBusy ? "disabled" : ""}>${esc(state.chatDraft || "")}</textarea>
@@ -741,5 +714,5 @@ function tabs(state, db) {
 function rail(state, db) {
   const items = navItems(db).concat([["settings", "Настройки"]]);
   const current = navCurrent(state);
-  return `<p class="logo">merch</p>${items.map(([view, label]) => `<button type="button" data-action="go" data-view="${view}" ${current === view ? 'aria-current="page"' : ""}>${label}</button>`).join("")}<button type="button" data-action="toggle-chat">Помощник</button>`;
+  return `<p class="logo">merch</p>${items.map(([view, label]) => `<button type="button" data-action="go" data-view="${view}" ${current === view ? 'aria-current="page"' : ""}>${label}</button>`).join("")}<button type="button" data-action="toggle-chat">I.R.I.S.</button>`;
 }

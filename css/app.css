@@ -226,8 +226,8 @@ h2 { font-size: 20px; letter-spacing: -0.02em; }
   gap: 6px;
 }
 .mini {
-  width: 36px;
-  height: 36px;
+  width: 44px;
+  height: 44px;
   border-radius: 12px;
   border: 1px solid var(--line);
   background: var(--paper);
@@ -615,6 +615,7 @@ textarea { min-height: 88px; resize: vertical; }
   h1 { font-size: 34px; }
 }
 
+.visit-shots { background: #f3ecdf; }
 .shot-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .shot {
   position: relative;
