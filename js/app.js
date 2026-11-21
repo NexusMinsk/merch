@@ -1,4 +1,7 @@
 import { assessStore, planDay, primaryReason, storeById, todayISO } from "./model.js";
+import { askBeaver } from "./agent.js";
+import { shotFlags, shotUrl, saveShot } from "./shots.js";
+import { pullShared, pushShared } from "./sync.js";
 import { emptyDb, loadDb, normalize, overrideFor, saveDb } from "./db.js";
 import { guidePeekHtml, render } from "./ui.js";
 import {
@@ -28,6 +31,9 @@ const state = {
   confirmDate: null,
   pen: "path",
   returnView: null,
+  chatOpen: false,
+  chatBusy: false,
+  chatDraft: "",
 };
 
 let guideGen = 0;
@@ -39,10 +45,26 @@ let lastView = "";
 function draw() {
   render(state, db);
   mountGuides().catch(() => {});
+  mountShots().catch(() => {});
   if (state.view !== lastView) {
     window.scrollTo(0, 0);
     lastView = state.view;
   }
+}
+
+async function mountShots() {
+  const slots = [...document.querySelectorAll("[data-shot]")];
+  await Promise.all(slots.map(async (slot) => {
+    const [date, storeId, kind] = slot.dataset.shot.split("|");
+    const url = await shotUrl(date, storeId, kind);
+    const label = slot.textContent;
+    if (!url) return;
+    slot.innerHTML = `<img alt="${label}" src="${url}"><span>${label}</span>`;
+  }));
+}
+
+function shareSoon() {
+  pushShared(db).then(() => persist()).catch(() => {});
 }
 
 function toast(message) {
@@ -182,7 +204,17 @@ function saveVisit() {
   stop.arrivedAt = stop.arrivedAt || stop.finishedAt;
   delete stop.draft;
   writeSignal(state.storeId, state.date, visit);
+  shotFlags(state.date, state.storeId).then((flags) => {
+    const day = db.days[state.date];
+    const saved = day?.stops?.find((item) => item.storeId === state.storeId);
+    if (saved?.visit) {
+      saved.visit.shots = flags;
+      persist();
+      shareSoon();
+    }
+  }).catch(() => {});
   persist();
+  shareSoon();
   state.view = "today";
   state.draft = null;
   state.formError = "";
@@ -352,7 +384,8 @@ async function exportCopy() {
   } catch {
     guides = {};
   }
-  const blob = new Blob([JSON.stringify({ ...db, guides }, null, 2)], { type: "application/json" });
+  const copy = { ...db, settings: { ...db.settings, llmKey: "" }, guides };
+  const blob = new Blob([JSON.stringify(copy, null, 2)], { type: "application/json" });
   const link = document.createElement("a");
   link.href = URL.createObjectURL(blob);
   link.download = `merch-${todayISO()}.json`;
@@ -606,6 +639,54 @@ document.addEventListener("click", (event) => {
   } else if (action === "close-picker" || action === "close-confirm" || action === "close-overlay") {
     state.pickerDate = null;
     state.confirm = null;
+    if (action === "close-overlay") state.chatOpen = false;
+  } else if (action === "toggle-chat") {
+    state.chatOpen = !state.chatOpen;
+    state.pickerDate = null;
+    state.confirm = null;
+  } else if (action === "send-chat") {
+    const text = (state.chatDraft || document.querySelector("[data-chat-input]")?.value || "").trim();
+    if (!text || state.chatBusy) return;
+    state.chatDraft = "";
+    state.chatBusy = true;
+    db.chat = Array.isArray(db.chat) ? db.chat : [];
+    db.chat.push({ role: "user", content: text, at: new Date().toISOString() });
+    persist();
+    draw();
+    askBeaver(db, {
+      apiBase: db.settings.apiBase,
+      apiKey: db.settings.llmKey,
+      today: todayISO(),
+    }).then((reply) => {
+      db.chat.push({ role: "assistant", content: reply, at: new Date().toISOString() });
+      state.chatBusy = false;
+      persist();
+      return pushShared(db);
+    }).then(() => {
+      persist();
+      draw();
+    }).catch((error) => {
+      db.chat.push({ role: "assistant", content: error?.message || "Помощник не ответил", at: new Date().toISOString() });
+      state.chatBusy = false;
+      persist();
+      draw();
+    });
+    return;
+  } else if (action === "add-person") {
+    const name = document.getElementById("person-name")?.value.trim();
+    const role = document.getElementById("person-role")?.value === "lead" ? "lead" : "merch";
+    if (!name) return;
+    db.people = Array.isArray(db.people) ? db.people : [];
+    if (db.people.some((person) => person.name.toLowerCase() === name.toLowerCase())) {
+      toast("Такое имя уже есть");
+      return;
+    }
+    const id = `p-${Date.now().toString(36)}`;
+    db.people.push({ id, name, role });
+    if (!db.settings.personId && role === "lead") db.settings.personId = id;
+    persist();
+    shareSoon();
+    toast(role === "lead" ? "Руководитель добавлен" : "Мерч добавлен");
   } else if (action === "pin") {
     pinStop(date, id);
   } else if (action === "shelf") {
@@ -651,11 +732,11 @@ document.addEventListener("click", (event) => {
     const day = db.days[todayISO()];
     if (!day) return;
     state.confirm = {
-      title: "Выключить день?",
+      title: "Отменить начало дня?",
       text: day.snapshot
-        ? "Вернётесь к моменту до «Начать работу». Отметки на точках за этот день исчезнут, дата брака станет такой, как была до старта. Утренний список поставки останется."
+        ? "Вернётесь к плану до «Начать работу». Отметки за этот день исчезнут. Список «куда привезут» останется. День при этом не закрывается."
         : "День снимется, сегодняшние отметки на точках уберу. Этот запуск был без снимка, поэтому даты, переписанные уже внутри визита, могут не вернуться.",
-      confirm: "Выключить без последствий",
+      confirm: "Отменить начало",
       action: "cancel-day",
     };
   } else if (action === "cancel-day") {
@@ -850,6 +931,47 @@ document.addEventListener("change", (event) => {
     draw();
     return;
   }
+  if (target.matches("[data-setting='personId']")) {
+    db.settings.personId = target.value || null;
+    persist();
+    draw();
+    return;
+  }
+  if (target.matches("[data-setting='apiBase']")) {
+    db.settings.apiBase = target.value.trim().replace(/\/$/, "");
+    persist();
+    pullShared(db).then(() => {
+      persist();
+      draw();
+      toast("Общая база подключилась");
+    }).catch(() => toast("Сервер не ответил"));
+    return;
+  }
+  if (target.matches("[data-setting='llmKey']")) {
+    db.settings.llmKey = target.value.trim();
+    persist();
+    return;
+  }
+  if (target.matches("[data-owner]")) {
+    if (!db.owners || typeof db.owners !== "object") db.owners = {};
+    if (target.value) db.owners[target.dataset.owner] = target.value;
+    else delete db.owners[target.dataset.owner];
+    persist();
+    shareSoon();
+    return;
+  }
+  if (target.matches("[data-shot-input]")) {
+    const file = target.files?.[0];
+    target.value = "";
+    if (!file || !state.date || !state.storeId) return;
+    saveShot(state.date, state.storeId, target.dataset.kind, file).then((result) => {
+      if (result === "ok") toast("Кадр сохранён");
+      else if (result === "too-big") toast("Фото слишком большое");
+      else toast("Это фото не открылось");
+      draw();
+    });
+    return;
+  }
   if (target.matches("[data-import]") && target.files?.[0]) {
     importCopy(target.files[0]).then(draw);
   }
@@ -868,6 +990,10 @@ document.addEventListener("input", (event) => {
     }
     return;
   }
+  if (target.matches("[data-chat-input]")) {
+    state.chatDraft = target.value;
+    return;
+  }
   if (target.matches("#note")) state.draft.note = target.value;
   if (target.matches("#warehouse")) state.draft.warehouseQty = parseQty(target.value, true);
   if (target.matches("#defect")) state.draft.defectQty = parseQty(target.value, false);
@@ -877,5 +1003,10 @@ document.addEventListener("input", (event) => {
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
   navigator.serviceWorker.register("sw.js").catch(() => {});
 }
+
+pullShared(db).then(() => {
+  persist();
+  draw();
+}).catch(() => {});
 
 draw();

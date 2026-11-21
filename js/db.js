@@ -8,7 +8,14 @@ export function emptyDb() {
       lowStock: 12,
       startStoreId: null,
       hintSeen: false,
+      personId: null,
+      apiBase: "",
+      llmKey: "",
     },
+    people: [],
+    owners: {},
+    chat: [],
+    sharedRev: 0,
     signals: {},
     overrides: {},
     deliveries: {},
@@ -63,6 +70,30 @@ export function normalize(input) {
   base.settings.lowStock = clamp(Number(base.settings.lowStock) || 12, 0, 500);
   base.settings.startStoreId = base.settings.startStoreId || null;
   base.settings.hintSeen = Boolean(base.settings.hintSeen);
+  base.settings.personId = base.settings.personId || null;
+  base.settings.apiBase = String(base.settings.apiBase || "").trim().replace(/\/$/, "");
+  base.settings.llmKey = String(base.settings.llmKey || "");
+  base.people = Array.isArray(db.people)
+    ? db.people.filter((person) => person && person.id && person.name).map((person) => ({
+      id: String(person.id),
+      name: String(person.name).slice(0, 40),
+      role: person.role === "lead" ? "lead" : "merch",
+    }))
+    : [];
+  base.owners = {};
+  if (db.owners && typeof db.owners === "object") {
+    for (const [storeId, personId] of Object.entries(db.owners)) {
+      if (storeId && personId) base.owners[String(storeId)] = String(personId);
+    }
+  }
+  base.chat = Array.isArray(db.chat)
+    ? db.chat.filter((message) => message && (message.role === "user" || message.role === "assistant") && message.content).slice(-30).map((message) => ({
+      role: message.role,
+      content: String(message.content).slice(0, 4000),
+      at: message.at || "",
+    }))
+    : [];
+  base.sharedRev = Number(db.sharedRev) || 0;
   base.signals = db.signals && typeof db.signals === "object" ? db.signals : {};
   base.overrides = db.overrides && typeof db.overrides === "object" ? db.overrides : {};
   base.deliveries = {};

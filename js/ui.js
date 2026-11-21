@@ -7,6 +7,7 @@ import {
   orderLabel,
   planDay,
   plural,
+  scopeStores,
   prettyDate,
   reasonChips,
   shelfLabel,
@@ -102,7 +103,7 @@ function planIntro(plan) {
   if (plan.overflow) {
     return "Обязательных точек больше лимита. Брак и вчерашнюю поставку оставил все.";
   }
-  return "Обязательно брак и выкладка вчерашней поставки. 9-й км и Партизанский 106 — через день: если вчера уже были, сегодня их нет. Остальные места — остатки и магазины, где давно не были.";
+  return "Сначала брак и вчерашняя поставка. 9-й км и Партизанский 106 — через день. Остальное — рядом и где давно не были.";
 }
 
 function todayView(state, db, today) {
@@ -114,12 +115,11 @@ function todayView(state, db, today) {
   const currentStore = current ? storeById(current.storeId) : null;
   const hint = !db.settings.hintSeen
     ? `<section class="hint-card">
-        <h2>Как устроен день</h2>
+        <h2>С чего начать</h2>
         <ol>
-          <li>С утра отметьте магазины, куда сегодня привезут. Завтра они станут обязательными.</li>
-          <li>На точке отметьте полку, склад, брак и заказ. Дату поставки больше вписывать не нужно.</li>
-          <li>В карточке точки один раз сохраните фото магазина и схему: где пиво и где склад.</li>
-          <li>Вечером откройте «Завтра»: там выкладка и магазины, где ещё не были.</li>
+          <li>Утром нажмите «Отметить магазины». Завтра эти магазины будут обязательными.</li>
+          <li>На точке снимите три фото и отметьте полку, склад и брак.</li>
+          <li>«Помощник» — отдельный чат. Светлана остаётся руководителем.</li>
         </ol>
         <button class="btn ghost wide" style="margin-top:12px" type="button" data-action="dismiss-hint">Понятно</button>
       </section>`
@@ -139,7 +139,7 @@ function todayView(state, db, today) {
         ${linksHtml(stops)}
       </div>
       ${schemeBlock(stops)}
-      <h2 class="section-title">Порядок</h2>
+      <h2 class="section-title">Маршрут</h2>
       ${stops.map((stop, index) => stopCard(stop, index, today, { locked: false })).join("") || `<p class="lede">Маршрут пустой. Добавьте точку или уберите исключение.</p>`}
       <button class="btn ghost wide" style="margin-top:10px" type="button" data-action="open-picker" data-date="${today}">Добавить точку</button>`;
   }
@@ -160,7 +160,7 @@ function todayView(state, db, today) {
       ${stops.map((stop, index) => stopCard(stop, index, today, { locked: true })).join("")}
       <div class="stack">
         <button class="btn ghost wide" type="button" data-action="reopen-day">Открыть день снова</button>
-        <button class="btn ghost wide" type="button" data-action="ask-cancel-day">Выключить день</button>
+        <button class="btn ghost wide" type="button" data-action="ask-cancel-day">Отменить начало дня</button>
         ${linksHtml(stops)}
       </div>`;
   }
@@ -199,7 +199,7 @@ function todayView(state, db, today) {
       ${linksHtml(stops)}
       ${fresh ? `<button class="btn ghost wide" type="button" data-action="ask-rebuild">Пересобрать маршрут</button>` : ""}
       <button class="btn ghost wide" type="button" data-action="ask-finish">Завершить день</button>
-      <button class="btn ghost wide" type="button" data-action="ask-cancel-day">Выключить день</button>
+      <button class="btn ghost wide" type="button" data-action="ask-cancel-day">Отменить начало дня</button>
     </div>`;
 }
 
@@ -215,7 +215,7 @@ function tomorrowView(db, today) {
     <div class="stack">${linksHtml(plan.stops)}</div>
     ${schemeBlock(plan.stops)}
     <p class="lede">${esc(planIntro(plan))}</p>
-    <h2 class="section-title">Порядок</h2>
+    <h2 class="section-title">Маршрут</h2>
     ${plan.stops.map((stop, index) => stopCard(stop, index, date, { locked: false })).join("") || `<p class="lede">На завтра точек нет.</p>`}
     <button class="btn ghost wide" style="margin-top:10px" type="button" data-action="open-picker" data-date="${date}">Добавить точку</button>`;
 }
@@ -240,7 +240,17 @@ function visitView(state, db) {
     <p class="lede">${esc(storeLine(store))}</p>
     ${previous}
     ${store.hint ? `<p class="hint">${esc(store.hint)}</p>` : ""}
-    ${guidePeekCard(store.id, "Изменить", true)}
+    <section class="card">
+      <h2 class="guide-title">Фото этого визита</h2>
+      <p class="hint">Полка, склад и брак — снимки именно сегодня. Схему «где пиво» рисуют один раз, она ниже.</p>
+      <div class="shot-grid">
+        ${[["shelf", "Полка"], ["warehouse", "Склад"], ["defect", "Брак"]].map(([kind, label]) => `<label class="shot">
+          <span data-shot="${esc(state.date)}|${esc(store.id)}|${kind}">${label}</span>
+          <input type="file" accept="image/*" capture="environment" data-shot-input data-kind="${kind}">
+        </label>`).join("")}
+      </div>
+    </section>
+    ${guidePeekCard(store.id, "Открыть схему", true)}
     <div class="field">
       <div class="label">Полка</div>
       <div class="choice">
@@ -292,7 +302,7 @@ function visitView(state, db) {
 
 function storesView(state, db) {
   const query = (state.query || "").trim().toLowerCase();
-  const stores = STORES.filter((store) => {
+  const stores = scopeStores(db).filter((store) => {
     if (state.chain !== "all" && store.chain !== state.chain) return false;
     if (!query) return true;
     return `${store.chain} ${store.address} ${store.place}`.toLowerCase().includes(query);
@@ -302,7 +312,7 @@ function storesView(state, db) {
     return `<button type="button" data-action="chain" data-value="${esc(chain)}" aria-pressed="${state.chain === chain}">${esc(label)}</button>`;
   }).join("");
   return `<h1>Точки</h1>
-    <p class="lede">22 адреса. В карточке — фото магазина и схема, как пройти к пиву и на склад. Дату большого брака тоже можно поставить здесь.</p>
+    <p class="lede">${scopeStores(db).length} адресов в этом телефоне. В карточке — фото магазина и схема, как пройти к пиву и на склад. На визите отдельно снимаются полка, склад и брак.</p>
     <input type="search" data-search placeholder="Найти адрес" value="${esc(state.query || "")}">
     <div class="filters">${filters}</div>
     ${stores.map((store) => storeButton(store, db.signals[store.id])).join("")}`;
@@ -321,7 +331,7 @@ function guidePeekCard(storeId, actionLabel = "Карточка", schemeFirst = 
     <div class="split"><strong>Где пиво и склад</strong>
       <button class="text-btn" type="button" data-action="open-store" data-id="${storeId}" style="font-weight:800">${esc(actionLabel)}</button>
     </div>
-    <div data-guide-slot="${storeId}" data-scheme-first="${schemeFirst ? "1" : ""}"><p class="hint">Фото и схема ещё не добавлены. Откройте карточку и отметьте, где пиво и где склад.</p></div>
+    <div data-guide-slot="${storeId}" data-scheme-first="${schemeFirst ? "1" : ""}"><p class="hint">Схемы ещё нет. Откройте её и отметьте, где пиво и где склад.</p></div>
   </section>`;
 }
 
@@ -448,8 +458,27 @@ function settingsView(db) {
   const options = [`<option value="">Центр Минска</option>`]
     .concat(STORES.map((store) => `<option value="${store.id}" ${db.settings.startStoreId === store.id ? "selected" : ""}>${esc(store.chain)} · ${esc(storeLine(store))}</option>`))
     .join("");
+  const personOptions = [`<option value="" ${db.settings.personId ? "" : "selected"}>Все магазины, как раньше</option>`]
+    .concat((db.people || []).map((person) => `<option value="${esc(person.id)}" ${db.settings.personId === person.id ? "selected" : ""}>${esc(person.name)} · ${person.role === "lead" ? "руководитель" : "мерч"}</option>`))
+    .join("");
   return `<h1>Настройки</h1>
     <p class="lede">Уже начатый день не перестраивается. Новые цифры попадут в следующий маршрут.</p>
+    <div class="field">
+      <label for="who">Кто держит этот телефон</label>
+      <select id="who" data-setting="personId">${personOptions}</select>
+      <p class="hint">Руководитель видит все точки и стол. Мерч, за которым закреплены магазины, видит только свои. Пока имя не выбрано, маршрут общий.</p>
+    </div>
+    <div class="field">
+      <label for="api">Адрес общей базы</label>
+      <input id="api" data-setting="apiBase" placeholder="http://192.168.0.10:8787" value="${esc(db.settings.apiBase || "")}">
+      <p class="hint">На каждом телефоне откройте приложение по этому адресу, в одной сети Wi‑Fi. С сайта на GitHub общая база не подключится. Ключ помощника лежит на сервере.</p>
+    </div>
+    <div class="field">
+      <label for="llm">Ключ помощника на этом телефоне</label>
+      <input id="llm" data-setting="llmKey" type="password" autocomplete="off" placeholder="если сервера нет" value="${esc(db.settings.llmKey || "")}">
+      <p class="hint">Нужен только без сервера. В выгрузку и на общий сервер ключ не уходит.</p>
+    </div>
+    <button class="btn ghost wide" style="margin-bottom:14px" type="button" data-action="go" data-view="desk">Стол руководителя</button>
     <div class="field">
       <div class="label">Точек в обычный день: ${db.settings.maxStops}</div>
       <div class="stepper">
@@ -479,14 +508,14 @@ function settingsView(db) {
       <li>Утренний список поставки — на следующий день эти магазины обязательные, товар нужно выставить.</li>
       <li>Пустая полка и ноль на складе поднимают точку. Малый остаток занимает только часть дня.</li>
       <li>Остальные места — магазины, где ещё не были или давно не заезжали.</li>
-      <li>Внутри группы порядок собран так, чтобы меньше петлять по городу.</li>
+      <li>Дальше точки набираются рядом с уже выбранными, а не прыжком через весь город.</li>
     </ol>
     <h2 class="section-title">Сброс по дням</h2>
     <p class="lede">День возвращается к пустому: маршрут, отметки на точках и список поставки за эту дату исчезают. Остальные дни остаются. Число точек, порог склада и старт не меняются.</p>
     ${resetList(db)}
-    <h2 class="section-title">Проверка</h2>
-    <p class="lede">Выключить день — проверка без следа. Маршрут снова станет планом, отметки после «Начать работу» снимутся. Утренний список поставки при этом останется.</p>
-    <button class="btn ghost wide" type="button" data-action="ask-cancel-day" ${db.days[todayISO()] ? "" : "disabled"}>Выключить сегодняшний день</button>
+    <h2 class="section-title">Отменить начало дня</h2>
+    <p class="lede">Маршрут снова станет планом. Отметки после «Начать работу» снимутся. Список «куда привезут» останется. Это не то же самое, что «Завершить день».</p>
+    <button class="btn ghost wide" type="button" data-action="ask-cancel-day" ${db.days[todayISO()] ? "" : "disabled"}>Отменить начало сегодня</button>
     ${db.days[todayISO()] ? "" : `<p class="hint">Сейчас рабочий день не включён.</p>`}
     <h2 class="section-title">Память телефона</h2>
     <p class="lede">Отметки, фото магазинов и схемы прохода хранятся в этом браузере. Склад и CRM сюда не подключены. Перед чисткой скачайте копию — в неё попадут и схемы.</p>
@@ -502,9 +531,9 @@ function deliveryCard(db, today) {
   const names = ids.map((id) => storeById(id)).filter(Boolean);
   const list = names.length
     ? `<div class="chips">${names.map((store) => `<span class="chip warn">${esc(store.chain)} · ${esc(store.address)}</span>`).join("")}</div>`
-    : `<p class="hint">Пока пусто. Отмеченные магазины попадут в маршрут завтра — выставить товар.</p>`;
+    : `<p class="hint">Пока пусто. Отмеченные магазины встанут в завтрашний маршрут.</p>`;
   return `<section class="card">
-    <div class="split"><strong>Поставка сегодня</strong><span class="meta">${ids.length}</span></div>
+    <div class="split"><strong>Куда привезут сегодня</strong><span class="meta">${ids.length}</span></div>
     ${list}
     <button class="btn secondary wide" type="button" data-action="open-deliveries" style="margin-top:10px">Отметить магазины</button>
   </section>`;
@@ -514,8 +543,8 @@ function deliveryView(db) {
   const today = todayISO();
   const selected = new Set(db.deliveries?.[today] || []);
   return `<button class="back-btn" type="button" data-action="close-deliveries">← Ко дню</button>
-    <h1 style="margin-top:8px">Поставка сегодня</h1>
-    <p class="lede">Нажмите магазин, чтобы отметить. Завтра эти точки будут обязательными: приехать и выставить товар. Сейчас в списке: ${selected.size}.</p>
+    <h1 style="margin-top:8px">Куда привезут сегодня</h1>
+    <p class="lede">Нажмите магазин. Завтра эти точки будут обязательными: приехать и выставить товар. Сейчас в списке: ${selected.size}.</p>
     ${STORES.map((store) => {
       const on = selected.has(store.id);
       return `<button class="store-row" type="button" data-action="toggle-delivery" data-id="${store.id}" aria-pressed="${on}">
@@ -556,8 +585,59 @@ function resetList(db) {
     <button class="btn ghost wide" type="button" data-action="ask-reset-days" style="margin-top:12px">Сбросить все дни</button>`;
 }
 
+function personById(db, id) {
+  return (db.people || []).find((person) => person.id === id) || null;
+}
+
+function deskView(db) {
+  const people = db.people || [];
+  const ownerOptions = (selected) => [`<option value="">не закреплён</option>`]
+    .concat(people.filter((person) => person.role !== "lead").map((person) => `<option value="${esc(person.id)}" ${selected === person.id ? "selected" : ""}>${esc(person.name)}</option>`))
+    .join("");
+  const team = people.length
+    ? people.map((person) => `<div class="store-row"><strong>${esc(person.name)}</strong><div class="meta">${person.role === "lead" ? "руководитель" : "мерч"}</div></div>`).join("")
+    : `<p class="hint">Сначала добавьте руководителя и мерчей. Имена можно надиктовать помощнику.</p>`;
+  return `<h1>Стол</h1>
+    <p class="lede">Утро руководителя: кто ездит в какой магазин и куда сегодня везут. Список можно продиктовать помощнику — в маршрут он попадёт завтра.</p>
+    <button class="btn secondary wide" type="button" data-action="toggle-chat">Написать помощнику</button>
+    <h2 class="section-title">Люди</h2>
+    ${team}
+    <div class="field">
+      <label for="person-name">Имя</label>
+      <input id="person-name" placeholder="Светлана">
+    </div>
+    <div class="field">
+      <label for="person-role">Роль</label>
+      <select id="person-role">
+        <option value="lead">Руководитель</option>
+        <option value="merch">Мерч</option>
+      </select>
+    </div>
+    <button class="btn primary wide" type="button" data-action="add-person">Добавить человека</button>
+    <h2 class="section-title">Кто ездит в магазин</h2>
+    ${STORES.map((store) => `<div class="store-row">
+      <div class="brand" data-chain="${esc(store.chain)}">${esc(store.chain)}</div>
+      <div>${esc(storeLine(store))}</div>
+      <select data-owner="${esc(store.id)}" style="margin-top:8px">${ownerOptions(db.owners?.[store.id] || "")}</select>
+    </div>`).join("")}`;
+}
+
+function chatHtml(state, db) {
+  if (!state.chatOpen) return "";
+  const lines = (db.chat || []).map((message) => `<div class="bubble ${message.role === "user" ? "user" : ""}">${esc(message.content)}</div>`).join("");
+  return `<section class="sheet chat-sheet">
+    <div class="split"><h2>Помощник</h2><button class="text-btn" type="button" data-action="toggle-chat">Закрыть</button></div>
+    <p class="hint">Чат для руководителя и мерчей. Помощник меняет поставки, людей и число точек. Светлану он не заменяет.</p>
+    <div class="chat-log">${lines || `<p class="hint">Например: «поставка сегодня Гиппо Некрасова и Санта Толбухина».</p>`}${state.chatBusy ? `<p class="hint">Смотрю данные…</p>` : ""}</div>
+    <div class="chat-compose">
+      <textarea data-chat-input placeholder="Поставка, люди или число точек" ${state.chatBusy ? "disabled" : ""}>${esc(state.chatDraft || "")}</textarea>
+      <button class="btn primary" type="button" data-action="send-chat" ${state.chatBusy ? "disabled" : ""}>Отправить</button>
+    </div>
+  </section>`;
+}
+
 function overlayHtml(state, db) {
-  const sheets = pickerHtml(state, db) + confirmHtml(state);
+  const sheets = pickerHtml(state, db) + confirmHtml(state) + chatHtml(state, db);
   if (!sheets) return "";
   return `<div class="backdrop" data-action="close-overlay"></div>${sheets}`;
 }
@@ -566,7 +646,7 @@ function pickerHtml(state, db) {
   if (!state.pickerDate) return "";
   const plan = db.days[state.pickerDate] || planDay(state.pickerDate, db);
   const taken = new Set((plan.stops || []).filter((stop) => stop.status !== "skipped").map((stop) => stop.storeId));
-  const stores = STORES.filter((store) => !taken.has(store.id));
+  const stores = scopeStores(db).filter((store) => !taken.has(store.id));
   return `<section class="sheet">
     <h2>Добавить точку</h2>
     <div class="picker-list">
@@ -609,6 +689,7 @@ export function render(state, db) {
     store: () => storeView(state, db),
     history: () => historyView(db),
     day: () => dayView(state, db),
+    desk: () => deskView(db),
     settings: () => settingsView(db),
   }[state.view] || (() => todayView(state, db, today));
 
@@ -619,8 +700,8 @@ export function render(state, db) {
   if (overlay) overlay.innerHTML = overlayHtml(state, db);
   document.getElementById("side").innerHTML = sideHtml(state, db, today);
   mountRouteMap(keptMap);
-  document.getElementById("rail").innerHTML = rail(state);
-  document.getElementById("tabbar").innerHTML = tabs(state);
+  document.getElementById("rail").innerHTML = rail(state, db);
+  document.getElementById("tabbar").innerHTML = tabs(state, db);
   document.body.dataset.view = state.view;
 }
 
@@ -645,14 +726,20 @@ function navCurrent(state) {
   return state.view === "deliveries" ? "today" : state.view;
 }
 
-function tabs(state) {
+function navItems(db) {
   const items = [["today", "Сегодня"], ["tomorrow", "Завтра"], ["stores", "Точки"], ["history", "Журнал"]];
-  const current = navCurrent(state);
-  return items.map(([view, label]) => `<button type="button" data-action="go" data-view="${view}" ${current === view ? 'aria-current="page"' : ""}>${label}</button>`).join("");
+  const person = personById(db, db.settings?.personId);
+  if (person?.role === "lead") items.splice(1, 0, ["desk", "Стол"]);
+  return items;
 }
 
-function rail(state) {
-  const items = [["today", "Сегодня"], ["tomorrow", "Завтра"], ["stores", "Точки"], ["history", "Журнал"], ["settings", "Настройки"]];
+function tabs(state, db) {
   const current = navCurrent(state);
-  return `<p class="logo">merch</p>${items.map(([view, label]) => `<button type="button" data-action="go" data-view="${view}" ${current === view ? 'aria-current="page"' : ""}>${label}</button>`).join("")}`;
+  return navItems(db).map(([view, label]) => `<button type="button" data-action="go" data-view="${view}" ${current === view ? 'aria-current="page"' : ""}>${label}</button>`).join("");
+}
+
+function rail(state, db) {
+  const items = navItems(db).concat([["settings", "Настройки"]]);
+  const current = navCurrent(state);
+  return `<p class="logo">merch</p>${items.map(([view, label]) => `<button type="button" data-action="go" data-view="${view}" ${current === view ? 'aria-current="page"' : ""}>${label}</button>`).join("")}<button type="button" data-action="toggle-chat">Помощник</button>`;
 }

@@ -1,5 +1,5 @@
-const CACHE = "merch-5";
-const FILES = ["./index.html", "./css/app.css", "./js/app.js", "./js/ui.js", "./js/model.js", "./js/db.js", "./js/guides.js", "./manifest.webmanifest", "./icon.svg"];
+const CACHE = "merch-7";
+const FILES = ["./index.html", "./css/app.css", "./js/app.js", "./js/ui.js", "./js/model.js", "./js/db.js", "./js/guides.js", "./js/shots.js", "./js/agent.js", "./js/sync.js", "./manifest.webmanifest", "./icon.svg"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(FILES)));

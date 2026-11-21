@@ -43,6 +43,29 @@ export function storeById(id) {
   return STORES.find((store) => store.id === id) || null;
 }
 
+export function currentPerson(db) {
+  const people = Array.isArray(db?.people) ? db.people : [];
+  return people.find((person) => person.id === db?.settings?.personId) || null;
+}
+
+/** Мерч видит только свои магазины, когда они уже закреплены. Руководитель и телефон без имени видят все. */
+export function scopeStores(db) {
+  const person = currentPerson(db);
+  if (!person || person.role === "lead") return STORES;
+  const owned = STORES.filter((store) => db?.owners?.[store.id] === person.id);
+  return owned.length ? owned : STORES;
+}
+
+export function findStores(query) {
+  const text = String(query || "").trim().toLowerCase().replaceAll("ё", "е");
+  if (!text) return [];
+  const words = text.split(/\s+/).filter(Boolean);
+  return STORES.filter((store) => {
+    const hay = `${store.chain} ${store.address} ${store.place} ${store.maps}`.toLowerCase().replaceAll("ё", "е");
+    return words.every((word) => hay.includes(word));
+  });
+}
+
 export function storeLine(store) {
   return store.place ? `${store.address} · ${store.place}` : store.address;
 }
@@ -322,6 +345,40 @@ function rotationRank(item) {
   return rank;
 }
 
+function distanceToGroup(item, anchors) {
+  let near = Infinity;
+  for (const anchor of anchors) {
+    const distance = haversine({ lat: anchor.lat, lon: anchor.lon }, { lat: item.lat, lon: item.lon });
+    if (distance < near) near = distance;
+  }
+  return near;
+}
+
+function clusterFill(must, pool, count, start) {
+  const chosen = [];
+  const left = pool.slice();
+  const home = must.length ? must : [start];
+  while (chosen.length < count && left.length) {
+    const anchors = home.concat(chosen);
+    let best = 0;
+    let bestScore = -Infinity;
+    for (let i = 0; i < left.length; i += 1) {
+      const item = left[i];
+      let urgency = 0;
+      if (item.reasons.includes("stockout")) urgency = 10;
+      else if (item.reasons.includes("emptyShelf")) urgency = 4;
+      else if (item.reasons.includes("lowStock") || item.reasons.includes("orderCheck")) urgency = 3;
+      const score = (rotationRank(item) + urgency) * 3.2 - distanceToGroup(item, anchors);
+      if (score > bestScore) {
+        bestScore = score;
+        best = i;
+      }
+    }
+    chosen.push(left.splice(best, 1)[0]);
+  }
+  return chosen;
+}
+
 function pickRotation(pool, count, start) {
   if (count <= 0 || pool.length === 0) return [];
   const ranked = pool.slice().sort((a, b) => rotationRank(b) - rotationRank(a) || a.store.address.localeCompare(b.store.address, "ru"));
@@ -351,7 +408,7 @@ export function planDay(date, db) {
   const dropped = new Set(override.drop || []);
   const pinned = new Set(override.pin || []);
   const start = startPoint(settings);
-  const assessed = STORES.map((store) => assessStore(store, db.signals[store.id], date, settings))
+  const assessed = scopeStores(db).map((store) => assessStore(store, db.signals[store.id], date, settings))
     .filter((item) => !dropped.has(item.storeId));
   for (const item of assessed) markEveryOther(item);
 
@@ -376,19 +433,12 @@ export function planDay(date, db) {
     }
     const must = assessed.filter((item) => item.reasons.includes("defect") || item.reasons.includes("delivery") || item.reasons.includes("everyOther") || pinned.has(item.storeId));
     const mustIds = new Set(must.map((item) => item.storeId));
-    const problemPool = assessed
-      .filter((item) => !mustIds.has(item.storeId) && (
-        item.reasons.includes("stockout") ||
-        (cooledDown(item) && (item.reasons.includes("emptyShelf") || item.reasons.includes("lowStock") || item.reasons.includes("orderCheck")))
-      ))
-      .sort((a, b) => b.score - a.score);
-    const free = Math.max(0, settings.maxStops - must.length);
-    const problemCap = Math.min(problemPool.length, Math.floor(free / 2));
-    chosen = must.concat(problemPool.slice(0, problemCap));
-    const picked = new Set(chosen.map((item) => item.storeId));
-    const rotation = assessed.filter((item) => !picked.has(item.storeId) && cooledDown(item));
-    chosen = chosen.concat(pickRotation(rotation, Math.max(0, settings.maxStops - chosen.length), start));
-    chosen = applyManualOrder(chosen, override.order, start);
+    const pool = assessed.filter((item) => !mustIds.has(item.storeId) && (
+      item.reasons.includes("stockout") || cooledDown(item)
+    ));
+    const filled = clusterFill(must, pool, Math.max(0, settings.maxStops - must.length), start);
+    chosen = must.concat(filled);
+    chosen = override.order?.length ? applyManualOrder(chosen, override.order, start) : arrange(chosen, start);
   }
 
   const mustCount = chosen.filter((item) => item.reasons.includes("defect") || item.reasons.includes("delivery")).length;
